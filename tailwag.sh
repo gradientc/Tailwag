@@ -122,43 +122,26 @@ log "NextDNS CLI installed: $(nextdns version)"
 
 log "Configuring NextDNS CLI..."
 
-# Stop the service during configuration
+# Stop the service to ensure we can write the config safely
 systemctl stop nextdns 2>/dev/null || true
 
-# Build listen addresses
-# NextDNS CLI accepts multiple -listen flags or comma-separated values
-LISTEN_ADDRS="${TS_IPV4}:53"
-if [[ -n "$TS_IPV6" ]]; then
-    LISTEN_ADDRS="${LISTEN_ADDRS},[${TS_IPV6}]:53"
-fi
-
-# Core configuration
-nextdns config set -profile="$NEXTDNS_PROFILE_ID"
-nextdns config set -listen="$LISTEN_ADDRS"
-nextdns config set -cache-size="$CACHE_SIZE"
-nextdns config set -max-ttl="$MAX_TTL"
-
-# Report client info to NextDNS (device names, OS, Tailscale IP)
-# This enables per-device analytics and filtering in the NextDNS dashboard
-nextdns config set -report-client-info=true
-
-# Use Tailscale's MagicDNS (100.100.100.100) for discovering client names
-# This allows NextDNS logs to show human-readable device names
-nextdns config set -discovery-dns="100.100.100.100"
-
-# Forward all *.ts.net queries to Tailscale's MagicDNS
-# This preserves MagicDNS hostname resolution including shared-in devices
-nextdns config set -forwarder="ts.net=100.100.100.100"
-
-# Prevent private IP reverse lookups (RFC1918) from being sent upstream
-# Returns NXDOMAIN for 192.168.x.x, 10.x.x.x, etc. reverse queries
-nextdns config set -bogus-priv=true
-
-# Disable auto-activation (we don't want the system DNS to be nextdns, to avoid loops)
-nextdns config set -auto-activate=false
+# Write the configuration file directly.
+# This avoids issues where 'nextdns config set' appends duplicate lines.
+cat > /etc/nextdns.conf <<EOF
+profile $NEXTDNS_PROFILE_ID
+listen ${TS_IPV4}:53
+$( [[ -n "$TS_IPV6" ]] && echo "listen [${TS_IPV6}]:53" )
+cache-size $CACHE_SIZE
+max-ttl $MAX_TTL
+report-client-info true
+discovery-dns 100.100.100.100
+forwarder ts.net=100.100.100.100
+auto-activate false
+bogus-priv true
+use-hosts true
+EOF
 
 log "Configuration written to /etc/nextdns.conf"
-cat /etc/nextdns.conf | grep -v "^#" | grep -v "^$" | sed 's/^/  /'
 
 # --- Firewall Configuration --------------------------------------------------
 
