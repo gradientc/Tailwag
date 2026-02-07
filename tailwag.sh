@@ -1,244 +1,290 @@
 #!/usr/bin/env bash
+# ==============================================================================
+#  TAILWAG  ·  Model 02
+#  A caching DNS relay for Tailscale networks. One script. Full stack.
+# ==============================================================================
 #
-# setup_nextdns_relay.sh
+#  What it does:
+#    - Installs NextDNS CLI via the official apt repository
+#    - Configures it as a DNS53 relay bound to your Tailscale addresses
+#    - Enables dual-stack (IPv4 + IPv6) by default
+#    - Installs a systemd drop-in so the service survives reboots
+#    - Sets up UFW rules if your firewall is active
+#    - Prevents DNS loops on the relay server itself
 #
-# Configures NextDNS CLI as a caching DNS relay for a Tailscale network (tailnet).
-# Intended to run on multiple servers for redundancy and geographic distribution.
+#  Designed to be run multiple times. Each run produces a clean, identical
+#  configuration state regardless of what was there before.
 #
-# After running this script on each relay server:
-#   1. Add the Tailscale IP(s) of your relays to your tailnet's DNS settings
-#   2. Enable "Override local DNS" in the Tailscale admin console
-#   3. Run `sudo tailscale up --accept-dns=false` on each relay server
+#  Usage:
+#    sudo ./tailwag.sh <nextdns_profile_id>
 #
-# Requirements: Ubuntu/Debian, Tailscale installed and authenticated
+#  After running on each relay:
+#    1. Add the Tailscale IP(s) as Custom Nameservers in your tailnet DNS
+#       https://login.tailscale.com/admin/dns
+#    2. Enable "Override local DNS"
+#    3. The script handles --accept-dns=false for you (see final prompt)
 #
-# Usage: sudo ./setup_nextdns_relay.sh <nextdns_profile_id>
+#  Requirements: Debian/Ubuntu, Tailscale installed and authenticated
 #
+# ==============================================================================
 
 set -euo pipefail
 
-# --- Configuration -----------------------------------------------------------
+readonly VERSION="0.2.0"
 
-# Cache size. 10-20MB is typically sufficient for most home/small-office tailnets.
-# NextDNS CLI stores responses in memory; larger caches use more RAM.
+# --- Tuning ------------------------------------------------------------------
+#
+# These defaults are good for home/small-office tailnets. Adjust if you know
+# what you're doing; the comments explain the trade-offs.
+
+# In-memory cache. 10-20 MB covers most tailnets without meaningful RAM cost.
 CACHE_SIZE="20MB"
 
-# Maximum TTL served to *clients*. This does NOT affect server-side cache.
-# Setting 5s forces clients to re-query frequently, ensuring rapid propagation
-# of NextDNS config changes (e.g., whitelisting a false positive). The relay's
-# own cache still honors upstream TTLs for actual caching benefit.
-# See: https://github.com/nextdns/nextdns/wiki/Cache-Configuration
+# Max TTL served to clients. Does NOT affect the relay's own upstream cache.
+# 5s forces frequent re-queries so NextDNS config changes (e.g., whitelisting
+# a false positive) propagate to clients almost immediately.
+# Reference: https://github.com/nextdns/nextdns/wiki/Cache-Configuration
 MAX_TTL="5s"
 
-# Whether to also bind to the Tailscale IPv6 address. Recommended for dual-stack
-# support and redundancy. Set to "false" if you only want IPv4.
-ENABLE_IPV6="true"
+# Bind to the Tailscale IPv6 address in addition to IPv4.
+# Both are always assigned by Tailscale; dual-stack is free redundancy.
+ENABLE_IPV6=true
 
-# ------------------------------------------------------------------------------
+# --- Internals (no user-serviceable parts below) -----------------------------
 
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
-}
+log()   { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
+warn()  { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
+die()   { printf '[%s] FATAL: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; exit 1; }
 
-error() {
-    log "ERROR: $*" >&2
-    exit 1
-}
+# -- Pre-flight ---------------------------------------------------------------
 
-# Require root
-[[ $(id -u) -eq 0 ]] || error "This script must be run as root"
+[[ $(id -u) -eq 0 ]] || die "Must run as root.  sudo $0 <profile_id>"
 
-# Require profile ID argument
-NEXTDNS_PROFILE_ID="${1:-}"
-if [[ -z "$NEXTDNS_PROFILE_ID" ]]; then
-    echo "Usage: $0 <nextdns_profile_id>"
-    echo "  Example: $0 abc123"
-    echo ""
-    echo "Find your profile ID in the NextDNS dashboard under Setup > Endpoints"
+NEXTDNS_PROFILE="${1:-}"
+if [[ -z "$NEXTDNS_PROFILE" ]]; then
+    printf 'Usage: %s <nextdns_profile_id>\n' "$0"
+    printf '  Find yours at: https://my.nextdns.io → Setup → Endpoints\n'
     exit 1
 fi
 
-# Validate profile ID format (alphanumeric, 6-7 characters)
-if [[ ! "$NEXTDNS_PROFILE_ID" =~ ^[a-zA-Z0-9]{6,7}$ ]]; then
-    error "Invalid NextDNS profile ID format. Expected 6-7 alphanumeric characters, got: $NEXTDNS_PROFILE_ID"
-fi
+[[ "$NEXTDNS_PROFILE" =~ ^[a-zA-Z0-9]{6,7}$ ]] \
+    || die "Invalid profile ID '$NEXTDNS_PROFILE'. Expected 6-7 alphanumeric characters."
 
-# Locate tailscale binary
-TAILSCALE_BIN=""
-for candidate in /usr/bin/tailscale /usr/local/bin/tailscale /opt/tailscale/bin/tailscale tailscale; do
+# -- Locate Tailscale ---------------------------------------------------------
+
+TS_BIN=""
+for candidate in tailscale /usr/bin/tailscale /usr/local/bin/tailscale; do
     if command -v "$candidate" &>/dev/null; then
-        TAILSCALE_BIN="$candidate"
+        TS_BIN="$candidate"
         break
     fi
 done
-[[ -n "$TAILSCALE_BIN" ]] || error "Tailscale binary not found. Is Tailscale installed?"
+[[ -n "$TS_BIN" ]] || die "Tailscale binary not found. Is it installed?"
 
-# Verify tailscale is running and authenticated
-if ! $TAILSCALE_BIN status &>/dev/null; then
-    error "Tailscale is not running or not authenticated. Run 'tailscale up' first."
-fi
+$TS_BIN status &>/dev/null \
+    || die "Tailscale is not running or not authenticated. Run 'tailscale up' first."
 
-# Get Tailscale IPv4 address (100.x.y.z)
-TS_IPV4=$($TAILSCALE_BIN ip -4 2>/dev/null | head -n1)
-if [[ -z "$TS_IPV4" || ! "$TS_IPV4" =~ ^100\. ]]; then
-    error "Could not determine Tailscale IPv4 address. Got: '$TS_IPV4'"
-fi
+# -- Discover Tailscale addresses ---------------------------------------------
+
+TS_IPV4=$($TS_BIN ip -4 2>/dev/null | head -n1)
+[[ "$TS_IPV4" =~ ^100\. ]] \
+    || die "Could not get a valid Tailscale IPv4 address (got: '${TS_IPV4:-<empty>}')"
 log "Tailscale IPv4: $TS_IPV4"
 
-# Get Tailscale IPv6 address (fd7a:115c:a1e0::/48 range)
 TS_IPV6=""
-if [[ "$ENABLE_IPV6" == "true" ]]; then
-    TS_IPV6=$($TAILSCALE_BIN ip -6 2>/dev/null | head -n1)
-    if [[ -z "$TS_IPV6" || ! "$TS_IPV6" =~ ^fd7a:115c:a1e0: ]]; then
-        log "WARNING: Could not determine Tailscale IPv6 address. Continuing with IPv4 only."
-        TS_IPV6=""
-    else
+if [[ "$ENABLE_IPV6" == true ]]; then
+    TS_IPV6=$($TS_BIN ip -6 2>/dev/null | head -n1)
+    if [[ "$TS_IPV6" =~ ^fd7a:115c:a1e0: ]]; then
         log "Tailscale IPv6: $TS_IPV6"
+    else
+        warn "Could not get Tailscale IPv6 address. Continuing IPv4-only."
+        TS_IPV6=""
     fi
 fi
 
-# --- Install NextDNS CLI -----------------------------------------------------
+# -- Install NextDNS CLI (idempotent) -----------------------------------------
 
-log "Installing NextDNS CLI..."
+if command -v nextdns &>/dev/null; then
+    log "NextDNS CLI already present: $(nextdns version)"
+else
+    log "Installing NextDNS CLI..."
 
-# Install prerequisites
-apt-get update -qq
-apt-get install -y -qq curl gnupg ca-certificates
+    apt-get update -qq
+    apt-get install -y -qq curl gnupg ca-certificates
 
-# Add NextDNS repository
-install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://repo.nextdns.io/nextdns.gpg | gpg --dearmor -o /etc/apt/keyrings/nextdns.gpg
-chmod 644 /etc/apt/keyrings/nextdns.gpg
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://repo.nextdns.io/nextdns.gpg \
+        | gpg --dearmor --yes -o /etc/apt/keyrings/nextdns.gpg
+    chmod 644 /etc/apt/keyrings/nextdns.gpg
 
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/nextdns.gpg] https://repo.nextdns.io/deb stable main" \
-    > /etc/apt/sources.list.d/nextdns.list
+    printf 'deb [arch=%s signed-by=/etc/apt/keyrings/nextdns.gpg] https://repo.nextdns.io/deb stable main\n' \
+        "$(dpkg --print-architecture)" \
+        > /etc/apt/sources.list.d/nextdns.list
 
-apt-get update -qq
-apt-get install -y nextdns
+    apt-get update -qq
+    apt-get install -y nextdns
 
-log "NextDNS CLI installed: $(nextdns version)"
+    log "Installed: $(nextdns version)"
+fi
 
-# --- Configure NextDNS CLI ---------------------------------------------------
+# -- Write configuration ------------------------------------------------------
+# Written atomically via cat. Wipes any previous state, which is the point:
+# run the script again and you get a known-good config every time.
 
-log "Configuring NextDNS CLI..."
+log "Writing /etc/nextdns.conf ..."
 
-# Stop the service to ensure we can write the config safely
 systemctl stop nextdns 2>/dev/null || true
 
-# Write the configuration file directly.
-# This avoids issues where 'nextdns config set' appends duplicate lines.
-cat > /etc/nextdns.conf <<EOF
-profile $NEXTDNS_PROFILE_ID
-listen ${TS_IPV4}:53
-$( [[ -n "$TS_IPV6" ]] && echo "listen [${TS_IPV6}]:53" )
-cache-size $CACHE_SIZE
-max-ttl $MAX_TTL
+{
+    printf 'profile %s\n' "$NEXTDNS_PROFILE"
+    printf 'listen %s:53\n' "$TS_IPV4"
+    [[ -n "$TS_IPV6" ]] && printf 'listen [%s]:53\n' "$TS_IPV6"
+    printf 'cache-size %s\n' "$CACHE_SIZE"
+    printf 'max-ttl %s\n' "$MAX_TTL"
+    cat <<'STATIC'
 report-client-info true
 discovery-dns 100.100.100.100
 forwarder ts.net=100.100.100.100
 auto-activate false
 bogus-priv true
 use-hosts true
+STATIC
+} > /etc/nextdns.conf
+
+# -- Fix boot ordering (the actual reason it breaks on reboot) ----------------
+#
+# NextDNS ships a systemd unit with "After=network.target" — but that fires
+# long before tailscaled has established its tunnel and assigned the fd7a::
+# address. Result: bind() fails, service crashes, no DNS.
+#
+# The fix is a drop-in override that:
+#   1. Waits for tailscaled.service to be up
+#   2. Runs a pre-start check that blocks until the Tailscale IPv4 address
+#      is actually present on an interface (up to 90 seconds)
+#   3. Adds restart-on-failure so transient timing issues self-heal
+
+DROPIN_DIR="/etc/systemd/system/nextdns.service.d"
+DROPIN_FILE="${DROPIN_DIR}/tailwag.conf"
+
+log "Installing systemd drop-in: $DROPIN_FILE"
+mkdir -p "$DROPIN_DIR"
+
+cat > "$DROPIN_FILE" <<EOF
+# Installed by Tailwag ${VERSION}
+# Ensures NextDNS waits for Tailscale before binding.
+
+[Unit]
+After=tailscaled.service
+Wants=tailscaled.service
+
+[Service]
+# Block until the Tailscale IPv4 is actually routable.
+# Checks once per second, gives up after 90s.
+ExecStartPre=/bin/bash -c ' \\
+    for i in \$(seq 1 90); do \\
+        ip addr show | grep -q "${TS_IPV4}" && exit 0; \\
+        sleep 1; \\
+    done; \\
+    echo "Tailwag: timed out waiting for ${TS_IPV4}" >&2; \\
+    exit 1'
+
+Restart=on-failure
+RestartSec=5
 EOF
 
-log "Configuration written to /etc/nextdns.conf"
+systemctl daemon-reload
 
-# --- Firewall Configuration --------------------------------------------------
+# -- Firewall (UFW) -----------------------------------------------------------
 
-# Only configure UFW if it's installed and active
 if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
-    log "Configuring UFW firewall rules..."
-    
-    # Verify tailscale0 interface exists
     if ip link show tailscale0 &>/dev/null; then
-        # Allow DNS (UDP/TCP 53) from Tailscale network only
-        ufw allow in on tailscale0 to any port 53 proto udp comment "NextDNS relay (UDP)"
-        ufw allow in on tailscale0 to any port 53 proto tcp comment "NextDNS relay (TCP)"
-        log "UFW rules added for tailscale0 interface"
+        log "Configuring UFW rules on tailscale0..."
+
+        # ufw is idempotent for identical rules; safe to re-run.
+        ufw allow in on tailscale0 to any port 53 proto udp \
+            comment "Tailwag DNS relay" >/dev/null
+        ufw allow in on tailscale0 to any port 53 proto tcp \
+            comment "Tailwag DNS relay" >/dev/null
     else
-        log "WARNING: tailscale0 interface not found. Skipping UFW configuration."
-        log "         You may need to manually allow port 53 from your tailnet."
+        warn "tailscale0 interface not found. Skipping UFW rules."
     fi
 else
-    log "UFW not active. Ensure your firewall allows port 53 from the tailnet."
+    log "UFW inactive or absent. Ensure port 53 is reachable from your tailnet."
 fi
 
-# --- Start and Verify Service ------------------------------------------------
+# -- Start & verify -----------------------------------------------------------
 
 log "Starting NextDNS service..."
-systemctl enable nextdns
-systemctl start nextdns
-
-# Wait briefly for service to initialize
+systemctl enable nextdns >/dev/null 2>&1
+systemctl restart nextdns
 sleep 2
 
-# Verify service is running
 if ! systemctl is-active --quiet nextdns; then
-    log "ERROR: NextDNS service failed to start. Checking logs..."
-    journalctl -u nextdns --no-pager -n 20
-    error "NextDNS service is not running"
+    warn "Service did not start cleanly. Recent logs:"
+    journalctl -u nextdns --no-pager -n 15
+    die "nextdns.service is not running."
 fi
 
-# Verify DNS resolution works
-log "Testing DNS resolution..."
-TEST_RESULT=$(dig +short +time=5 @"$TS_IPV4" example.com A 2>/dev/null || echo "FAILED")
-if [[ "$TEST_RESULT" == "FAILED" || -z "$TEST_RESULT" ]]; then
-    log "WARNING: DNS test query failed. The service may still be initializing."
-    log "         Try: dig @$TS_IPV4 example.com"
-else
-    log "DNS test successful: example.com -> $TEST_RESULT"
-fi
-
-if [[ -n "$TS_IPV6" ]]; then
-    TEST_RESULT6=$(dig +short +time=5 @"$TS_IPV6" example.com A 2>/dev/null || echo "FAILED")
-    if [[ "$TEST_RESULT6" == "FAILED" || -z "$TEST_RESULT6" ]]; then
-        log "WARNING: IPv6 DNS test failed. IPv4 should still work."
+# Quick smoke test: can we actually resolve through the relay?
+if command -v dig &>/dev/null; then
+    PROBE=$(dig +short +time=5 +tries=1 @"$TS_IPV4" example.com A 2>/dev/null || true)
+    if [[ -n "$PROBE" ]]; then
+        log "DNS probe OK: example.com -> $PROBE"
     else
-        log "IPv6 DNS test successful"
+        warn "DNS probe via $TS_IPV4 returned nothing. May still be warming up."
     fi
+
+    if [[ -n "$TS_IPV6" ]]; then
+        PROBE6=$(dig +short +time=5 +tries=1 @"$TS_IPV6" example.com A 2>/dev/null || true)
+        if [[ -n "$PROBE6" ]]; then
+            log "DNS probe OK (IPv6): example.com -> $PROBE6"
+        else
+            warn "IPv6 DNS probe returned nothing. IPv4 path is still functional."
+        fi
+    fi
+else
+    log "dig not found; skipping DNS probe. Install dnsutils to enable it."
 fi
 
-# --- Summary -----------------------------------------------------------------
+# -- Summary -------------------------------------------------------------------
 
-echo ""
-echo "=============================================================================="
-echo "  NextDNS Relay Setup Complete"
-echo "=============================================================================="
-echo ""
-echo "  Relay addresses for Tailscale DNS settings:"
-echo "    IPv4: $TS_IPV4"
-[[ -n "$TS_IPV6" ]] && echo "    IPv6: $TS_IPV6"
-echo ""
-echo "  NextDNS Profile: $NEXTDNS_PROFILE_ID"
-echo "  Cache Size: $CACHE_SIZE"
-echo "  Client TTL: $MAX_TTL"
-echo ""
-echo "  Next steps:"
-echo "    1. Add the above IP(s) to your tailnet DNS settings:"
-echo "       https://login.tailscale.com/admin/dns"
-echo ""
-echo "    2. Enable 'Override local DNS' in the Tailscale admin console"
-echo ""
-echo "    3. IMPORTANT: Run this on the relay server to prevent DNS loops:"
-echo "       sudo tailscale up --accept-dns=false"
-echo ""
-echo "    4. For redundancy, run this script on additional servers and add"
-echo "       their IPs to your tailnet DNS configuration"
-echo ""
-echo "  Useful commands:"
-echo "    nextdns status          - Check service status"
-echo "    nextdns log             - View query logs (Ctrl+C to exit)"
-echo "    nextdns config          - View current configuration"
-echo "    journalctl -u nextdns   - View service logs"
-echo ""
-echo "=============================================================================="
+cat <<SUMMARY
 
-# Prompt for immediate accept-dns configuration
-echo ""
-read -p "Run 'tailscale up --accept-dns=false' now? [y/N] " -n 1 -r
-echo ""
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    log "Configuring Tailscale to not accept DNS from the tailnet..."
-    $TAILSCALE_BIN up --accept-dns=false
-    log "Done. This server will no longer use the tailnet's DNS settings."
+==============================================================================
+  TAILWAG  ·  Relay Active
+==============================================================================
+
+  Addresses:
+    IPv4  ${TS_IPV4}
+$( [[ -n "$TS_IPV6" ]] && printf '    IPv6  %s\n' "$TS_IPV6" )
+  Profile:  ${NEXTDNS_PROFILE}
+  Cache:    ${CACHE_SIZE}  ·  Client TTL: ${MAX_TTL}
+
+  Next steps
+  ----------
+  1. Add the address(es) above as Custom Nameservers:
+     https://login.tailscale.com/admin/dns
+
+  2. Enable "Override local DNS" in the same panel.
+
+  3. For redundancy, repeat on additional servers.
+
+  Useful commands
+  ---------------
+  nextdns status                Check relay health
+  nextdns log                   Live query log (Ctrl-C to stop)
+  cat /etc/nextdns.conf         View configuration
+  journalctl -u nextdns -f      Follow service logs
+
+==============================================================================
+SUMMARY
+
+# -- Loop prevention -----------------------------------------------------------
+
+printf 'Run "tailscale up --accept-dns=false" on this server now? [y/N] '
+read -r REPLY
+if [[ "${REPLY,,}" == "y" ]]; then
+    log "Applying --accept-dns=false ..."
+    $TS_BIN up --accept-dns=false --reset
+    log "Done. This relay will not consume its own DNS."
 fi
