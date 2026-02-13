@@ -59,7 +59,7 @@ curl -fsSL https://raw.githubusercontent.com/gradientc/Tailwag/main/tailwag.sh |
 **Manual run**
 
 ```bash
-wget https://raw.githubusercontent.com/gradientc/Tailwag/main/tailwag.sh
+curl -fsSL -o tailwag.sh https://raw.githubusercontent.com/gradientc/Tailwag/main/tailwag.sh
 chmod +x tailwag.sh
 sudo ./tailwag.sh abc123
 ```
