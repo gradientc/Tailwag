@@ -62,9 +62,19 @@ die()   { printf '[%s] FATAL: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; exit 1; }
 
 NEXTDNS_PROFILE="${1:-}"
 if [[ -z "$NEXTDNS_PROFILE" ]]; then
-    printf 'Usage: %s <nextdns_profile_id>\n' "$0"
-    printf '  Find yours at: https://my.nextdns.io → Setup → Endpoints\n'
-    exit 1
+    if [[ -t 0 ]]; then
+        # Standard interactive shell
+        read -rp "Enter your NextDNS Profile ID: " NEXTDNS_PROFILE
+    elif [[ -r /dev/tty ]]; then
+        # Piped input (e.g. curl | bash), but TTY available
+        # Prompt to stderr to ensure visibility even if stdout is redirected
+        printf "Enter your NextDNS Profile ID: " >&2
+        read -r NEXTDNS_PROFILE < /dev/tty
+    else
+        printf 'Usage: %s <nextdns_profile_id>\n' "$0"
+        printf '  Find yours at: https://my.nextdns.io → Setup → Endpoints\n'
+        exit 1
+    fi
 fi
 
 [[ "$NEXTDNS_PROFILE" =~ ^[a-zA-Z0-9]{6,7}$ ]] \
@@ -281,8 +291,15 @@ SUMMARY
 
 # -- Loop prevention -----------------------------------------------------------
 
-printf 'Run "tailscale up --accept-dns=false" on this server now? [y/N] '
-read -r REPLY
+if [[ -t 0 ]]; then
+    read -rp 'Run "tailscale up --accept-dns=false" on this server now? [y/N] ' REPLY
+elif [[ -r /dev/tty ]]; then
+    printf 'Run "tailscale up --accept-dns=false" on this server now? [y/N] ' >&2
+    read -r REPLY < /dev/tty
+else
+    REPLY="n"
+fi
+
 if [[ "${REPLY,,}" == "y" ]]; then
     log "Applying --accept-dns=false ..."
     $TS_BIN up --accept-dns=false --reset
