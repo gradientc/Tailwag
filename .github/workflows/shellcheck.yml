@@ -1,0 +1,15 @@
+name: ShellCheck
+
+on: [push, pull_request]
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: '.'
+          additional_files: 'tailwag.sh docker/run docker/init-config.sh docker/tailscale-up.sh docker/rootfs/etc/s6-overlay/s6-rc.d/svc-nextdns/run'

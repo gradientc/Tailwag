@@ -1,4 +1,5 @@
 #!/command/with-contenv bash
+# shellcheck shell=bash
 # =============================================================================
 #  svc-tailscale-up  ·  s6-overlay oneshot
 #  Authenticates with Tailscale and blocks until the tunnel is up with a
@@ -18,7 +19,7 @@ TS="/usr/local/bin/tailscale"
 # --- Wait for tailscaled socket ----------------------------------------------
 
 log "Waiting for tailscaled socket..."
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
     if [[ -S "${SOCKET}" ]]; then
         break
     fi
@@ -67,7 +68,7 @@ $TS ${UP_ARGS[@]+"${UP_ARGS[@]}"}
 # to establish after 'tailscale up' returns. We poll until we get a 100.x IP.
 
 log "Waiting for Tailscale IP assignment..."
-for i in $(seq 1 90); do
+for _ in $(seq 1 90); do
     TS_IP=$($TS ip -4 2>/dev/null || true)
     if [[ "${TS_IP}" =~ ^100\. ]]; then
         log "Tailscale IPv4: ${TS_IP}"
