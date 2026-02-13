@@ -1,0 +1,21 @@
+#!/command/with-contenv bash
+# =============================================================================
+#  svc-nextdns  ·  s6-overlay longrun
+#  Runs NextDNS CLI as a DNS53-to-DoH proxy with caching.
+#  Configuration is read from /etc/nextdns.conf (written by init-config).
+# =============================================================================
+
+exec 2>&1
+
+log() { printf '[tailwag] nextdns: %s\n' "$*"; }
+
+# Quick sanity check
+if [[ ! -f /etc/nextdns.conf ]]; then
+    log "FATAL: /etc/nextdns.conf not found (init-config failed?)"
+    exit 1
+fi
+
+log "Starting NextDNS relay (profile=$(grep '^profile ' /etc/nextdns.conf | awk '{print $2}'))"
+log "Cache: $(grep '^cache-size ' /etc/nextdns.conf | awk '{print $2}'), TTL cap: $(grep '^max-ttl ' /etc/nextdns.conf | awk '{print $2}')"
+
+exec /usr/local/bin/nextdns run -config-file /etc/nextdns.conf
