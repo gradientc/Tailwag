@@ -1,4 +1,5 @@
 #!/command/with-contenv bash
+# shellcheck shell=bash
 # =============================================================================
 #  init-config  ·  s6-overlay oneshot
 #  Validates environment variables and writes /etc/nextdns.conf
