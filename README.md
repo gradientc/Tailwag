@@ -44,9 +44,24 @@ Every run produces the same configuration state. Safe to re-run.
 
 ## Quick start
 
+**One-line install (interactive)**
+
 ```bash
-# On your relay server:
-sudo ./tailwag.sh abc123    # replace with your NextDNS profile ID
+curl -fsSL https://raw.githubusercontent.com/gradientc/Tailwag/main/tailwag.sh | sudo bash
+```
+
+**One-line install (with argument)**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gradientc/Tailwag/main/tailwag.sh | sudo bash -s -- abc123
+```
+
+**Manual run**
+
+```bash
+wget https://raw.githubusercontent.com/gradientc/Tailwag/main/tailwag.sh
+chmod +x tailwag.sh
+sudo ./tailwag.sh abc123
 ```
 
 Then, in the [Tailscale admin console](https://login.tailscale.com/admin/dns):
