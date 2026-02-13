@@ -35,6 +35,8 @@ Every run produces the same configuration state. Safe to re-run.
 
 ## Requirements
 
+> Experimental docker version at [docker/README.md](docker/README.md)
+
 - **OS:** Debian or Ubuntu (uses `apt`)
 - **Tailscale:** Installed and authenticated (`tailscale status` must work)
 - **NextDNS account:** [Get a free profile ID](https://my.nextdns.io) → Setup → Endpoints

@@ -1,0 +1,51 @@
+# =============================================================================
+#  TAILWAG DOCKER  ·  fly.toml
+#
+#  Deploy a geodistributed NextDNS relay on Fly.io.
+#
+#  Quick start:
+#    fly launch --no-deploy
+#    fly secrets set TS_AUTHKEY=tskey-client-... NEXTDNS_PROFILE=abc123
+#    fly deploy
+#
+#  Multi-region (the whole point):
+#    fly scale count 3 --region ams,iad,sin
+#
+#  Cost: ~$2-3/month per region (shared-cpu-1x, 256MB, 1GB volume)
+# =============================================================================
+
+app = "tailwag"
+primary_region = "iad"
+
+[build]
+
+[env]
+  TS_HOSTNAME = "tailwag"
+  TS_ACCEPT_DNS = "false"
+  TS_USERSPACE = "false"
+  NEXTDNS_CACHE_SIZE = "10MB"
+  NEXTDNS_MAX_TTL = "5s"
+  NEXTDNS_LISTEN = ":53"
+  # EXIT_NODE = "true"  # Uncomment to advertise as exit node
+
+# Fly.io uses Firecracker microVMs — full kernel networking available.
+# No need for CAP_NET_ADMIN hacks; /dev/net/tun is natively present.
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = 256
+
+# Persistent volume for Tailscale state (survives deploys and restarts).
+# Create with: fly volumes create tailwag_state --size 1 --region <region>
+# For multi-region, create one volume per region.
+[mounts]
+  source = "tailwag_state"
+  destination = "/var/lib/tailscale"
+
+# Health check via DNS resolution
+[[services]]
+  protocol = "udp"
+  internal_port = 53
+
+# No public-facing HTTP service needed.
+# All traffic arrives via the Tailscale tunnel.

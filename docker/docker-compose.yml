@@ -1,0 +1,51 @@
+# =============================================================================
+#  TAILWAG DOCKER  ·  docker-compose.yml
+#
+#  Portable, caching NextDNS relay for Tailscale networks.
+#
+#  Quick start:
+#    1. Copy .env.example to .env, fill in your credentials
+#    2. docker compose up -d
+#    3. Add your Tailscale IP as a nameserver in the admin console
+#
+#  For exit node capability, uncomment the sysctls section below.
+# =============================================================================
+
+services:
+  tailwag:
+    build: .
+    # image: ghcr.io/tailwag/tailwag:latest  # or use a pre-built image
+    container_name: tailwag
+    restart: unless-stopped
+
+    # --- Required environment -----------------------------------------------
+    env_file: .env
+
+    # --- Kernel networking --------------------------------------------------
+    # CAP_NET_ADMIN: Tailscale tunnel creation, iptables rules
+    # CAP_NET_RAW:   Raw socket access for ICMP (ping), netcheck
+    # /dev/net/tun:  Kernel TUN device for WireGuard interface
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+
+    # --- Exit node / subnet router (uncomment if needed) --------------------
+    # sysctls:
+    #   net.ipv4.ip_forward: "1"
+    #   net.ipv6.conf.all.forwarding: "1"
+
+    # --- Persistent state ---------------------------------------------------
+    # Without this, every restart creates a new Tailscale identity.
+    volumes:
+      - tailwag-state:/var/lib/tailscale
+
+    # --- DNS port (optional: expose on host for non-tailnet clients) --------
+    # ports:
+    #   - "53:53/udp"
+    #   - "53:53/tcp"
+
+volumes:
+  tailwag-state:
+    driver: local
