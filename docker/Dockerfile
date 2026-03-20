@@ -19,7 +19,7 @@
 
 ARG ALPINE_VERSION=3.23.3
 ARG S6_OVERLAY_VERSION=3.2.2.0
-ARG TAILSCALE_VERSION=1.96.3
+ARG TAILSCALE_VERSION=1.96.2
 ARG NEXTDNS_VERSION=1.47.1
 
 # =============================================================================
@@ -60,9 +60,9 @@ RUN apk add --no-cache curl tar \
     # tarballs (only for Windows installers), so we rely on HTTPS transport
     # integrity from Tailscale's official package server.
     && curl -fsSL "https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_${TS_ARCH}.tgz" \
-       | tar -xz --strip-components=1 -C /usr/local/bin \
-            tailscale_${TAILSCALE_VERSION}_${TS_ARCH}/tailscale \
-            tailscale_${TAILSCALE_VERSION}_${TS_ARCH}/tailscaled
+    | tar -xz --strip-components=1 -C /usr/local/bin \
+    tailscale_${TAILSCALE_VERSION}_${TS_ARCH}/tailscale \
+    tailscale_${TAILSCALE_VERSION}_${TS_ARCH}/tailscaled
 
 # =============================================================================
 #  Stage 3: Download NextDNS CLI
@@ -78,8 +78,8 @@ RUN apk add --no-cache curl tar \
     && curl -fsSL "${NDNS_BASE}/nextdns_${NEXTDNS_VERSION}_${NDNS_ARCH}.tar.gz"  -o /tmp/nextdns.tar.gz \
     && curl -fsSL "${NDNS_BASE}/nextdns_${NEXTDNS_VERSION}_checksums.txt"         -o /tmp/nextdns_checksums.txt \
     && grep "${NDNS_ARCH}.tar.gz" /tmp/nextdns_checksums.txt \
-       | sed "s|nextdns_${NEXTDNS_VERSION}_${NDNS_ARCH}.tar.gz|/tmp/nextdns.tar.gz|" \
-       | sha256sum -c \
+    | sed "s|nextdns_${NEXTDNS_VERSION}_${NDNS_ARCH}.tar.gz|/tmp/nextdns.tar.gz|" \
+    | sha256sum -c \
     && tar -xz -C /usr/local/bin nextdns < /tmp/nextdns.tar.gz \
     && rm -f /tmp/nextdns.tar.gz /tmp/nextdns_checksums.txt
 
@@ -90,8 +90,8 @@ RUN apk add --no-cache curl tar \
 FROM alpine:${ALPINE_VERSION}
 
 LABEL maintainer="Tailwag" \
-      description="Portable caching NextDNS relay for Tailscale networks" \
-      org.opencontainers.image.source="https://github.com/gradientc/Tailwag"
+    description="Portable caching NextDNS relay for Tailscale networks" \
+    org.opencontainers.image.source="https://github.com/gradientc/Tailwag"
 
 # Runtime dependencies:
 #   iptables  — required for Tailscale exit node / subnet router NAT rules
@@ -101,12 +101,12 @@ LABEL maintainer="Tailwag" \
 #   bash      — s6-overlay scripts (minimal Alpine bash, ~1MB)
 #   bind-tools — dig for health checks (optional but worth the ~2MB)
 RUN apk add --no-cache \
-        iptables \
-        ip6tables \
-        iproute2 \
-        ca-certificates \
-        bash \
-        bind-tools \
+    iptables \
+    ip6tables \
+    iproute2 \
+    ca-certificates \
+    bash \
+    bind-tools \
     # Tailscale's critical iptables-legacy workaround:
     # Alpine 3.19+ defaults to nf_tables backend, but Tailscale's firewall
     # management expects iptables-legacy. Without these symlinks, exit node
