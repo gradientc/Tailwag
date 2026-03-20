@@ -1,6 +1,6 @@
 <p align="center">
 
-<img src="https://img.shields.io/badge/version-0.0.2-blue" alt="Version">
+<img src="https://img.shields.io/github/v/release/gradientc/Tailwag?label=version" alt="Version">
 
 <img src="https://img.shields.io/badge/platform-Debian%20%2F%20Ubuntu-orange" alt="Platform">
 
