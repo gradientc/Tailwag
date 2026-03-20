@@ -31,6 +31,7 @@ done
 
 UP_ARGS=(
     --socket="${SOCKET}"
+    up
     --accept-dns="${TS_ACCEPT_DNS:-false}"
     --hostname="${TS_HOSTNAME:-tailwag}"
 )
