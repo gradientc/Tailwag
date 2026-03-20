@@ -34,4 +34,4 @@ The one-liner install (`curl ... | sudo bash`) is convenient but inherits the ri
 
 ### Docker image — binary checksums
 
-The Docker build stages download Tailscale, NextDNS, and s6-overlay binaries and verify their SHA256 checksums against the official release files. If the upstream release servers are compromised at the source, both the binary and checksum file would be affected. This is a known limitation of the single-source verification model.
+The Docker build verifies SHA256 checksums for s6-overlay and NextDNS downloads against the checksum files published alongside each GitHub release. Tailscale is downloaded from `pkgs.tailscale.com` over HTTPS; Tailscale does not publish SHA256 sidecar files for Linux tarballs, so that download relies on HTTPS transport integrity alone. If upstream release servers are compromised at the source, both binaries and checksum files would be affected — this is a known limitation of the single-source verification model.
