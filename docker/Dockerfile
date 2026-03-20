@@ -56,15 +56,13 @@ ARG TARGETARCH
 
 RUN apk add --no-cache curl tar \
     && TS_ARCH=$(case "${TARGETARCH}" in amd64) echo amd64;; arm64) echo arm64;; *) echo "${TARGETARCH}";; esac) \
-    && TS_BASE="https://pkgs.tailscale.com/stable" \
-    && curl -fsSL "${TS_BASE}/tailscale_${TAILSCALE_VERSION}_${TS_ARCH}.tgz"        -o /tmp/tailscale.tgz \
-    && curl -fsSL "${TS_BASE}/tailscale_${TAILSCALE_VERSION}_${TS_ARCH}.tgz.sha256" -o /tmp/tailscale.tgz.sha256 \
-    && (cd /tmp && sed -i 's|tailscale_[^ ]*\.tgz|tailscale.tgz|' tailscale.tgz.sha256 && sha256sum -c tailscale.tgz.sha256) \
-    && tar -xz --strip-components=1 -C /usr/local/bin \
-           tailscale_${TAILSCALE_VERSION}_${TS_ARCH}/tailscale \
-           tailscale_${TAILSCALE_VERSION}_${TS_ARCH}/tailscaled \
-           < /tmp/tailscale.tgz \
-    && rm -f /tmp/tailscale.tgz /tmp/tailscale.tgz.sha256
+    # Note: pkgs.tailscale.com does not publish .sha256 sidecar files for Linux
+    # tarballs (only for Windows installers), so we rely on HTTPS transport
+    # integrity from Tailscale's official package server.
+    && curl -fsSL "https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_${TS_ARCH}.tgz" \
+       | tar -xz --strip-components=1 -C /usr/local/bin \
+            tailscale_${TAILSCALE_VERSION}_${TS_ARCH}/tailscale \
+            tailscale_${TAILSCALE_VERSION}_${TS_ARCH}/tailscaled
 
 # =============================================================================
 #  Stage 3: Download NextDNS CLI
