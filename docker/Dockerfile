@@ -76,8 +76,8 @@ RUN apk add --no-cache curl tar \
     && NDNS_ARCH=$(case "${TARGETARCH}" in amd64) echo linux_amd64;; arm64) echo linux_arm64;; *) echo "linux_${TARGETARCH}";; esac) \
     && NDNS_BASE="https://github.com/nextdns/nextdns/releases/download/v${NEXTDNS_VERSION}" \
     && curl -fsSL "${NDNS_BASE}/nextdns_${NEXTDNS_VERSION}_${NDNS_ARCH}.tar.gz"  -o /tmp/nextdns.tar.gz \
-    && curl -fsSL "${NDNS_BASE}/nextdns_${NEXTDNS_VERSION}_checksums.txt"         -o /tmp/nextdns_checksums.txt \
-    && grep "${NDNS_ARCH}.tar.gz" /tmp/nextdns_checksums.txt \
+    && curl -fsSL "${NDNS_BASE}/checksums.txt" -o /tmp/nextdns_checksums.txt \
+    && grep "nextdns_${NEXTDNS_VERSION}_${NDNS_ARCH}.tar.gz" /tmp/nextdns_checksums.txt \
     | sed "s|nextdns_${NEXTDNS_VERSION}_${NDNS_ARCH}.tar.gz|/tmp/nextdns.tar.gz|" \
     | sha256sum -c \
     && tar -xz -C /usr/local/bin nextdns < /tmp/nextdns.tar.gz \
