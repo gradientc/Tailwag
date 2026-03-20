@@ -1,0 +1,40 @@
+#!/command/with-contenv bash
+# shellcheck shell=bash
+# =============================================================================
+#  svc-tailscaled  ·  s6-overlay longrun
+#  Runs the Tailscale daemon. Kernel TUN mode by default; falls back to
+#  userspace if /dev/net/tun is unavailable or TS_USERSPACE=true.
+# =============================================================================
+
+exec 2>&1
+
+STATE_DIR="${TS_STATE_DIR:-/var/lib/tailscale}"
+SOCKET="/var/run/tailscale/tailscaled.sock"
+
+ARGS=(
+    --state="${STATE_DIR}/tailscaled.state"
+    --socket="${SOCKET}"
+    --statedir="${STATE_DIR}"
+)
+
+# Userspace networking: no TUN device, no CAP_NET_ADMIN needed, but no exit
+# node capability. Auto-detect if /dev/net/tun is missing.
+if [[ "${TS_USERSPACE:-false}" == "true" ]]; then
+    printf '[tailwag] tailscaled: userspace networking (explicit)\n'
+    ARGS+=(--tun=userspace-networking)
+elif [[ ! -c /dev/net/tun ]]; then
+    printf '[tailwag] tailscaled: /dev/net/tun not found, falling back to userspace\n'
+    ARGS+=(--tun=userspace-networking)
+else
+    printf '[tailwag] tailscaled: kernel TUN mode\n'
+fi
+
+# Firewall mode override — the #1 source of container deployment failures.
+# Modern hosts use nftables but containers often have iptables-legacy.
+# Let users override if auto-detection gets it wrong.
+if [[ -n "${TS_DEBUG_FIREWALL_MODE:-}" ]]; then
+    export TS_DEBUG_FIREWALL_MODE
+    printf '[tailwag] tailscaled: firewall mode override: %s\n' "${TS_DEBUG_FIREWALL_MODE}"
+fi
+
+exec /usr/local/bin/tailscaled "${ARGS[@]}"
