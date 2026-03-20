@@ -17,10 +17,10 @@
 
 # --- Build args --------------------------------------------------------------
 
-ARG ALPINE_VERSION=3.21
-ARG S6_OVERLAY_VERSION=3.2.0.2
-ARG TAILSCALE_VERSION=1.82.0
-ARG NEXTDNS_VERSION=1.44.5
+ARG ALPINE_VERSION=3.23.3
+ARG S6_OVERLAY_VERSION=3.2.2.0
+ARG TAILSCALE_VERSION=1.96.3
+ARG NEXTDNS_VERSION=1.47.1
 
 # =============================================================================
 #  Stage 1: Download s6-overlay for the target architecture
@@ -31,14 +31,20 @@ ARG S6_OVERLAY_VERSION
 ARG TARGETARCH
 
 RUN apk add --no-cache curl tar xz \
-    && mkdir -p /s6 \
+    && mkdir -p /s6 /tmp/s6 \
+    && S6_BASE="https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}" \
     # s6-overlay noarch (scripts, configs)
-    && curl -fsSL "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz" \
-       | tar -C /s6 -Jxp \
+    && curl -fsSL "${S6_BASE}/s6-overlay-noarch.tar.xz"        -o /tmp/s6/noarch.tar.xz \
+    && curl -fsSL "${S6_BASE}/s6-overlay-noarch.tar.xz.sha256" -o /tmp/s6/noarch.tar.xz.sha256 \
+    && (cd /tmp/s6 && sed -i 's|s6-overlay-noarch.tar.xz|noarch.tar.xz|' noarch.tar.xz.sha256 && sha256sum -c noarch.tar.xz.sha256) \
+    && tar -C /s6 -Jxp < /tmp/s6/noarch.tar.xz \
     # s6-overlay arch-specific binaries
     && S6_ARCH=$(case "${TARGETARCH}" in amd64) echo x86_64;; arm64) echo aarch64;; *) echo "${TARGETARCH}";; esac) \
-    && curl -fsSL "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-${S6_ARCH}.tar.xz" \
-       | tar -C /s6 -Jxp
+    && curl -fsSL "${S6_BASE}/s6-overlay-${S6_ARCH}.tar.xz"        -o /tmp/s6/arch.tar.xz \
+    && curl -fsSL "${S6_BASE}/s6-overlay-${S6_ARCH}.tar.xz.sha256" -o /tmp/s6/arch.tar.xz.sha256 \
+    && (cd /tmp/s6 && sed -i "s|s6-overlay-${S6_ARCH}.tar.xz|arch.tar.xz|" arch.tar.xz.sha256 && sha256sum -c arch.tar.xz.sha256) \
+    && tar -C /s6 -Jxp < /tmp/s6/arch.tar.xz \
+    && rm -rf /tmp/s6
 
 # =============================================================================
 #  Stage 2: Download Tailscale binaries
@@ -50,10 +56,15 @@ ARG TARGETARCH
 
 RUN apk add --no-cache curl tar \
     && TS_ARCH=$(case "${TARGETARCH}" in amd64) echo amd64;; arm64) echo arm64;; *) echo "${TARGETARCH}";; esac) \
-    && curl -fsSL "https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_${TS_ARCH}.tgz" \
-       | tar -xz --strip-components=1 -C /usr/local/bin \
-            tailscale_${TAILSCALE_VERSION}_${TS_ARCH}/tailscale \
-            tailscale_${TAILSCALE_VERSION}_${TS_ARCH}/tailscaled
+    && TS_BASE="https://pkgs.tailscale.com/stable" \
+    && curl -fsSL "${TS_BASE}/tailscale_${TAILSCALE_VERSION}_${TS_ARCH}.tgz"        -o /tmp/tailscale.tgz \
+    && curl -fsSL "${TS_BASE}/tailscale_${TAILSCALE_VERSION}_${TS_ARCH}.tgz.sha256" -o /tmp/tailscale.tgz.sha256 \
+    && (cd /tmp && sed -i 's|tailscale_[^ ]*\.tgz|tailscale.tgz|' tailscale.tgz.sha256 && sha256sum -c tailscale.tgz.sha256) \
+    && tar -xz --strip-components=1 -C /usr/local/bin \
+           tailscale_${TAILSCALE_VERSION}_${TS_ARCH}/tailscale \
+           tailscale_${TAILSCALE_VERSION}_${TS_ARCH}/tailscaled \
+           < /tmp/tailscale.tgz \
+    && rm -f /tmp/tailscale.tgz /tmp/tailscale.tgz.sha256
 
 # =============================================================================
 #  Stage 3: Download NextDNS CLI
@@ -65,8 +76,14 @@ ARG TARGETARCH
 
 RUN apk add --no-cache curl tar \
     && NDNS_ARCH=$(case "${TARGETARCH}" in amd64) echo linux_amd64;; arm64) echo linux_arm64;; *) echo "linux_${TARGETARCH}";; esac) \
-    && curl -fsSL "https://github.com/nextdns/nextdns/releases/download/v${NEXTDNS_VERSION}/nextdns_${NEXTDNS_VERSION}_${NDNS_ARCH}.tar.gz" \
-       | tar -xz -C /usr/local/bin nextdns
+    && NDNS_BASE="https://github.com/nextdns/nextdns/releases/download/v${NEXTDNS_VERSION}" \
+    && curl -fsSL "${NDNS_BASE}/nextdns_${NEXTDNS_VERSION}_${NDNS_ARCH}.tar.gz"  -o /tmp/nextdns.tar.gz \
+    && curl -fsSL "${NDNS_BASE}/nextdns_${NEXTDNS_VERSION}_checksums.txt"         -o /tmp/nextdns_checksums.txt \
+    && grep "${NDNS_ARCH}.tar.gz" /tmp/nextdns_checksums.txt \
+       | sed "s|nextdns_${NEXTDNS_VERSION}_${NDNS_ARCH}.tar.gz|/tmp/nextdns.tar.gz|" \
+       | sha256sum -c \
+    && tar -xz -C /usr/local/bin nextdns < /tmp/nextdns.tar.gz \
+    && rm -f /tmp/nextdns.tar.gz /tmp/nextdns_checksums.txt
 
 # =============================================================================
 #  Stage 4: Final image
@@ -76,7 +93,7 @@ FROM alpine:${ALPINE_VERSION}
 
 LABEL maintainer="Tailwag" \
       description="Portable caching NextDNS relay for Tailscale networks" \
-      org.opencontainers.image.source="https://github.com/tailwag/tailwag-docker"
+      org.opencontainers.image.source="https://github.com/gradientc/Tailwag"
 
 # Runtime dependencies:
 #   iptables  — required for Tailscale exit node / subnet router NAT rules
