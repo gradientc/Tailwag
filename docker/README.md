@@ -33,10 +33,34 @@ Total footprint: ~80 MB image, ~60 MB RAM at runtime with a 10 MB cache.
 
 ## Quick start
 
+### Option A — One-liner (pre-built image)
+
+No clone needed. Replace `<YOUR_TS_AUTHKEY>` and `<YOUR_NEXTDNS_PROFILE>` with your values:
+
+```bash
+docker run -d \
+  --name tailwag \
+  --cap-add NET_ADMIN \
+  --cap-add NET_RAW \
+  --device /dev/net/tun \
+  -e TS_AUTHKEY=<YOUR_TS_AUTHKEY> \
+  -e NEXTDNS_PROFILE=<YOUR_NEXTDNS_PROFILE> \
+  -v tailwag-state:/var/lib/tailscale \
+  --restart unless-stopped \
+  ghcr.io/gradientc/tailwag:latest
+```
+
+- **`TS_AUTHKEY`** — create one at [Tailscale › Settings › Keys](https://login.tailscale.com/admin/settings/keys). For long-lived deployments use an **OAuth client secret** (never expires) from [Tailscale › Settings › OAuth](https://login.tailscale.com/admin/settings/oauth).
+- **`NEXTDNS_PROFILE`** — the 6-7 character ID from [my.nextdns.io › Setup › Endpoints](https://my.nextdns.io) (e.g. `abc123`).
+
+Check logs with `docker logs -f tailwag`.
+
+### Option B — docker compose (from source)
+
 ```bash
 # 1. Clone and configure
-git clone https://github.com/tailwag/tailwag-docker.git
-cd tailwag-docker
+git clone https://github.com/gradientc/Tailwag.git
+cd Tailwag/docker
 cp .env.example .env
 # Edit .env: set NEXTDNS_PROFILE and TS_AUTHKEY
 
