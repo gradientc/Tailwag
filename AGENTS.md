@@ -208,12 +208,12 @@ The container image (the only thing that ships to production) is built from four
 
 **Current pins (source of truth)**
 
-| Component              | Current Pin | Latest (queried 2026-05) | Risk / Notes |
-|------------------------|-------------|---------------------------|--------------|
-| `ALPINE_VERSION`      | 3.23.3     | 3.23.4                   | Patch release in the 3.23 series. The `iptables-legacy` symlinks (Dockerfile:110-115) have been required since Alpine 3.19+; still present in 3.23.4. **Safe**. |
-| `S6_OVERLAY_VERSION`  | 3.2.2.0    | 3.2.3.0                  | Minor release (same tarball layout + SHA256 sidecars). **Safe**. |
-| `TAILSCALE_VERSION`   | 1.96.2     | 1.98.3                   | **Known publish-lag risk**. See commit `7ddcec9` ("downgrade ... to 1.96.2 because 1.96.3 doesn't seem to be released for linux yet, oops"). Always verify that `pkgs.tailscale.com/stable/tailscale_<ver>_{amd64,arm64}.tgz` exists for **both** architectures before changing the ARG. |
-| `NEXTDNS_VERSION`     | 1.47.1     | 1.47.2                   | Maintenance + small bug fixes. Full `checksums.txt` + per-arch tarballs provided. **Safe**. |
+| Component              | Current Pin | Latest (queried 2026-05-23) | Risk / Notes |
+|------------------------|-------------|-----------------------------|--------------|
+| `ALPINE_VERSION`      | 3.23.4     | 3.23.4 (2026-04-15)        | Patch release in the 3.23 series (security fixes for musl/openssl/zlib). The `iptables-legacy` symlinks (Dockerfile:110-115) still required and present. **Safe**. |
+| `S6_OVERLAY_VERSION`  | 3.2.3.0    | 3.2.3.0 (2026-05-09)       | Minor release (same tarball layout + SHA256 sidecars, updated skaware). **Safe**. |
+| `TAILSCALE_VERSION`   | 1.98.2     | 1.98.3 (2026-05-21, skipped) | **Known publish-lag risk** (see commit 7ddcec9 history). Bumped to 1.98.2 (published 2026-05-18 ~5 days old; both amd64/arm64 .tgz verified on pkgs.tailscale.com). 1.98.3 skipped (only ~47 h old as of 2026-05-23 21:30 UTC, violating the 2-day rule). 1.98.x has minor reported regressions (Chromecast discovery with exit nodes #19747); our image forces iptables-legacy symlinks + TS_DEBUG_FIREWALL_MODE support so core exit-node/subnet routing remains intact. MagicDNS post-network-change fix in 1.98.2 is beneficial. |
+| `NEXTDNS_VERSION`     | 1.47.2     | 1.47.2 (2026-04-13)        | Maintenance + small bug fixes (resolver, DHCP, etc.). Full `checksums.txt` + per-arch tarballs. **Safe**. |
 
 **GitHub Actions** (7 pins in `.github/workflows/`):
 

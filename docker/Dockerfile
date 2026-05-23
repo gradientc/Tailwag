@@ -17,10 +17,10 @@
 
 # --- Build args --------------------------------------------------------------
 
-ARG ALPINE_VERSION=3.23.3
-ARG S6_OVERLAY_VERSION=3.2.2.0
-ARG TAILSCALE_VERSION=1.96.2
-ARG NEXTDNS_VERSION=1.47.1
+ARG ALPINE_VERSION=3.23.4
+ARG S6_OVERLAY_VERSION=3.2.3.0
+ARG TAILSCALE_VERSION=1.98.2
+ARG NEXTDNS_VERSION=1.47.2
 
 # =============================================================================
 #  Stage 1: Download s6-overlay for the target architecture
