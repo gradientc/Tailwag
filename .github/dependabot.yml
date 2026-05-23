@@ -1,0 +1,35 @@
+# Dependabot configuration for Tailwag
+#
+# Purpose: Keep GitHub Actions and the Docker base image up to date,
+# while enforcing a 2-day "cooldown" (release aging) before any PR is
+# opened. This is the native Dependabot implementation of the supply-chain
+# security recommendation to delay consumption of brand-new releases.
+#
+# - github-actions: daily check, 2-day cooldown
+# - docker: weekly check (Dockerfile in /docker/), 2-day cooldown
+#
+# The four critical runtime components (Alpine, s6-overlay, Tailscale CLI,
+# NextDNS CLI) remain manually pinned via ARG in docker/Dockerfile.
+# See AGENTS.md → "Dependency & Supply-Chain Update Policy" for the
+# authoritative table, the Tailscale linux-tarball publish-lag gotcha,
+# the mandatory 2-day human wait for manual bumps, and the bump checklist.
+#
+# Cooldown reference:
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file#cooldown
+
+version: 2
+
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    cooldown:
+      default-days: 2
+
+  - package-ecosystem: "docker"
+    directory: "/docker"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 2
