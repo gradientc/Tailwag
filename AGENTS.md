@@ -73,7 +73,7 @@ There are two supported delivery mechanisms that share the same principles:
 ### Mandatory: ShellCheck
 
 ```bash
-# From repo root – this is the canonical list that matches every file currently carrying a # shellcheck directive
+# From repo root – canonical list of every managed shell script
 shellcheck \
   tailwag.sh \
   docker/run \
@@ -82,10 +82,12 @@ shellcheck \
   docker/rootfs/etc/s6-overlay/s6-rc.d/svc-nextdns/run \
   docker/rootfs/etc/s6-overlay/scripts/init-config.sh \
   docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh \
-  docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run
+  docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run \
+  .agents/setup \
+  .agents/resume
 ```
 
-If you add a new `.sh` file, add it to the command above **and** to the `additional_files` list in `.github/workflows/shellcheck.yml`.
+If you add a new `.sh` file, add it to the command above. Extensionless scripts must also be listed by **basename** in `.github/workflows/shellcheck.yml` `additional_files` (the action uses `find -name`, so path-valued entries are ignored).
 
 ### Testing the host script
 
@@ -161,7 +163,7 @@ Fly.io deployments are fully supported (see `fly.toml` and the docker README).
 
 - [tailwag.sh:55-57](/tailwag.sh) – host log/die helpers + timestamp
 - [tailwag.sh:164-203](/tailwag.sh) – the systemd drop-in that waits for the Tailscale address (original motivation for the whole project)
-- [docker/Dockerfile:110-115](/docker/Dockerfile) – iptables-legacy symlinks and the exact comment about Alpine 3.19+ / Ubuntu 22.04+
+- [docker/Dockerfile](/docker/Dockerfile) – `iptables-legacy` package + `/usr/sbin` symlinks (Alpine 3.19+; tailscale#17854). Build-time `iptables -V | grep -qi legacy` guard.
 - [docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh:68-88](/docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh) – the post-`tailscale up` 90-second poll for a routable `100.` IP ("the critical fix")
 - [docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run:32-38](/docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run) – "Firewall mode override — the #1 source of container deployment failures"
 - Checksum download pattern in Dockerfile stages 1 and 3 (s6 and NextDNS)
@@ -176,7 +178,7 @@ Fly.io deployments are fully supported (see `fly.toml` and the docker README).
    - Both poll for an address matching `^100\.` (IPv4) or the `fd7a:115c:...` prefix (IPv6).
 
 2. **iptables backend compatibility**
-   - The symlinks to `iptables-legacy` are required for exit-node and subnet-router functionality on modern distros that default to nftables. Removing them silently breaks users.
+   - Install the `iptables-legacy` package and point `/usr/sbin/iptables` + `/usr/sbin/ip6tables` at the legacy multi-call binary (see Dockerfile and tailscale#17854). Paths are `/usr/sbin`, **not** `/sbin` — the old `/sbin/iptables-legacy` links were dangling and broke exit-node/subnet NAT. Removing or regressing this silently breaks users on Synology and other legacy-iptables hosts.
 
 3. **MagicDNS preservation**
    - `forwarder ts.net=100.100.100.100` and `discovery-dns 100.100.100.100` in the generated `nextdns.conf` are mandatory. Clients on the tailnet must still resolve `.ts.net` names.
@@ -195,7 +197,7 @@ See the full [SECURITY.md](/SECURITY.md).
 
 - GPG key for the NextDNS apt repo is fetched over HTTPS and dearmored (known limitation documented).
 - s6-overlay and NextDNS binaries are SHA256-checked against upstream checksum files.
-- Tailscale tarball currently relies on HTTPS transport integrity only (no sidecar checksum published).
+- Tailscale Linux tarballs are SHA256-checked against the `.tgz.sha256` sidecars published on `pkgs.tailscale.com` (raw hex; verified before extract).
 - The `curl ... | sudo bash` one-liner is convenient but carries the usual transport risks — the script itself validates inputs aggressively.
 
 When touching any download or key-handling code, preserve or strengthen the existing verification steps.
@@ -208,21 +210,21 @@ The container image (the only thing that ships to production) is built from four
 
 **Current pins (source of truth)**
 
-| Component              | Current Pin | Latest (queried 2026-05-23) | Risk / Notes |
+| Component              | Current Pin | Latest (queried 2026-07-21) | Risk / Notes |
 |------------------------|-------------|-----------------------------|--------------|
-| `ALPINE_VERSION`      | 3.23.4     | 3.23.4 (2026-04-15)        | Patch release in the 3.23 series (security fixes for musl/openssl/zlib). The `iptables-legacy` symlinks (Dockerfile:110-115) still required and present. **Safe**. |
-| `S6_OVERLAY_VERSION`  | 3.2.3.0    | 3.2.3.0 (2026-05-09)       | Minor release (same tarball layout + SHA256 sidecars, updated skaware). **Safe**. |
-| `TAILSCALE_VERSION`   | 1.98.2     | 1.98.3 (2026-05-21, skipped) | **Known publish-lag risk** (see commit 7ddcec9 history). Bumped to 1.98.2 (published 2026-05-18 ~5 days old; both amd64/arm64 .tgz verified on pkgs.tailscale.com). 1.98.3 skipped (only ~47 h old as of 2026-05-23 21:30 UTC, violating the 2-day rule). 1.98.x has minor reported regressions (Chromecast discovery with exit nodes #19747); our image forces iptables-legacy symlinks + TS_DEBUG_FIREWALL_MODE support so core exit-node/subnet routing remains intact. MagicDNS post-network-change fix in 1.98.2 is beneficial. |
-| `NEXTDNS_VERSION`     | 1.47.2     | 1.47.2 (2026-04-13)        | Maintenance + small bug fixes (resolver, DHCP, etc.). Full `checksums.txt` + per-arch tarballs. **Safe**. |
+| `ALPINE_VERSION`      | 3.23.5     | 3.24.1 (2026-06-16) / 3.23.5 (2026-06-21) | Stayed on the 3.23 patch line (3.23.5, official release 2026-06-21; OpenSSL + Xen fixes) rather than jumping to 3.24.x in this pass. `iptables-legacy` package + `/usr/sbin` symlinks still required (see Dockerfile). **Safe**. |
+| `S6_OVERLAY_VERSION`  | 3.2.3.2    | 3.2.3.2 (2026-07-16)       | Patch in the 3.2.3.x line (updated skaware). Same tarball layout + SHA256 sidecars. Published 5 days before this bump — cooldown OK. **Safe**. |
+| `TAILSCALE_VERSION`   | 1.98.8     | 1.98.9 (2026-07-20, skipped) | **Known publish-lag risk** (see commit 7ddcec9 history). Bumped to 1.98.8 (published 2026-06-30; both amd64/arm64 .tgz + `.sha256` sidecars verified on pkgs.tailscale.com). 1.98.9 skipped (only ~12 h old as of 2026-07-21, violating the 2-day rule). 1.98.9 also includes six security advisories (TS-2026-004…009: SSH/Serve/Funnel path walks, service-IP packet filtering, etc.) — revisit after cooldown. 1.98.8 includes wireguard-go sleep/handshake fixes. Image installs `iptables-legacy` and rewrites `/usr/sbin/iptables` → legacy (tailscale#17854). |
+| `NEXTDNS_VERSION`     | 1.47.3     | 1.47.3 (2026-06-03)        | Go 1.26.4 + x/net bump + OpenWrt DHCP CIDR strip. Full `checksums.txt` + per-arch tarballs. **Safe**. |
 
-**GitHub Actions** (7 pins in `.github/workflows/`):
+**GitHub Actions** (pins in `.github/workflows/`):
 
-- `actions/checkout@v4`
-- `docker/setup-qemu-action@v3`
-- `docker/setup-buildx-action@v3`
-- `docker/login-action@v3`
-- `docker/metadata-action@v5`
-- `docker/build-push-action@v6`
+- `actions/checkout@v6`
+- `docker/setup-qemu-action@v4`
+- `docker/setup-buildx-action@v4`
+- `docker/login-action@v4.2.0`
+- `docker/metadata-action@v6`
+- `docker/build-push-action@v7`
 - `ludeeus/action-shellcheck@2.0.0`
 
 These are kept on recent tags. **Dependabot + the 2-day cooldown** (see below) will open PRs for them after the aging period.

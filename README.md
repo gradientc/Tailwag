@@ -112,7 +112,7 @@ Yes, and you should. Run Tailwag on two servers, add both IPs as nameservers in 
 
 **Will this break MagicDNS?**
 
-No. Tailwag forwards `.[ts.net](http://ts.net)` queries to `100.100.100.100` (Tailscale's internal resolver), so MagicDNS hostnames keep working.
+No. Tailwag forwards `.ts.net` queries to `100.100.100.100` (Tailscale's internal resolver), so MagicDNS hostnames keep working.
 
 **What if I change my NextDNS config (e.g., allowlist a domain)?**
 

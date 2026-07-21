@@ -22,10 +22,14 @@ log "Refreshing apt package index..."
 sudo apt-get update -qq
 
 # --- Core packages -----------------------------------------------------------
-# shellcheck: AGENTS.md mandates it before any .sh change
-# dnsutils:    dig used by Dockerfile HEALTHCHECK and manual DNS checks
-# curl/ca:     already present on most orbs; keep explicit for reliability
-# git:         already present; ensure it stays available
+# ShellCheck: AGENTS.md mandates it before any .sh change
+# dnsutils:   dig used by Dockerfile HEALTHCHECK and manual DNS checks
+# curl/ca:    already present on most orbs; keep explicit for reliability
+# git:        already present; ensure it stays available
+#
+# NOTE: Do not write "# shellcheck ..." comments that are not valid ShellCheck
+# directives — CI scans this file (shebang + no extension) and SC1072/SC1073
+# will fail the workflow.
 log "Installing shellcheck, dnsutils, curl, ca-certificates, git..."
 sudo apt-get install -y -qq \
   shellcheck \
@@ -125,10 +129,14 @@ shellcheck \
   docker/rootfs/etc/s6-overlay/s6-rc.d/svc-nextdns/run \
   docker/rootfs/etc/s6-overlay/scripts/init-config.sh \
   docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh \
-  docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run
+  docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run \
+  .agents/setup \
+  .agents/resume
 ```
 
-Also update `.github/workflows/shellcheck.yml` `additional_files` when adding scripts.
+Extensionless scripts must also be listed by **basename** in
+`.github/workflows/shellcheck.yml` `additional_files` (the action uses
+`find -name`, so path-valued entries are ignored).
 
 ## Duplicated scripts
 

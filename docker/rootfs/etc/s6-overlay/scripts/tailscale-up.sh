@@ -62,7 +62,10 @@ fi
 # --- Authenticate ------------------------------------------------------------
 
 log "Running tailscale up..."
-$TS ${UP_ARGS[@]+"${UP_ARGS[@]}"}
+# Quote the binary and expand the arg array safely. The ${arr[@]+"${arr[@]}"}
+# form avoids "unbound variable" under `set -u` if the array were ever empty
+# (it is not today — we always push --socket/up/--accept-dns/--hostname).
+"${TS}" ${UP_ARGS[@]+"${UP_ARGS[@]}"}
 
 # --- Wait for a routable Tailscale IP ----------------------------------------
 # This is the critical fix from the original Tailwag: the tunnel needs time
