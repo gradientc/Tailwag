@@ -17,10 +17,10 @@
 
 # --- Build args --------------------------------------------------------------
 
-ARG ALPINE_VERSION=3.23.4
-ARG S6_OVERLAY_VERSION=3.2.3.0
-ARG TAILSCALE_VERSION=1.98.2
-ARG NEXTDNS_VERSION=1.47.2
+ARG ALPINE_VERSION=3.23.5
+ARG S6_OVERLAY_VERSION=3.2.3.2
+ARG TAILSCALE_VERSION=1.98.8
+ARG NEXTDNS_VERSION=1.47.3
 
 # =============================================================================
 #  Stage 1: Download s6-overlay for the target architecture
@@ -56,13 +56,21 @@ ARG TARGETARCH
 
 RUN apk add --no-cache curl tar \
     && TS_ARCH=$(case "${TARGETARCH}" in amd64) echo amd64;; arm64) echo arm64;; *) echo "${TARGETARCH}";; esac) \
-    # Note: pkgs.tailscale.com does not publish .sha256 sidecar files for Linux
-    # tarballs (only for Windows installers), so we rely on HTTPS transport
-    # integrity from Tailscale's official package server.
-    && curl -fsSL "https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_${TS_ARCH}.tgz" \
-    | tar -xz --strip-components=1 -C /usr/local/bin \
-    tailscale_${TAILSCALE_VERSION}_${TS_ARCH}/tailscale \
-    tailscale_${TAILSCALE_VERSION}_${TS_ARCH}/tailscaled
+    && TS_BASE="https://pkgs.tailscale.com/stable" \
+    && TS_TGZ="tailscale_${TAILSCALE_VERSION}_${TS_ARCH}.tgz" \
+    # pkgs.tailscale.com publishes a raw hex SHA256 sidecar (no filename) as
+    # ${tarball}.sha256 for every stable Linux tarball. Verify before extract
+    # so a truncated/corrupted download fails the build instead of shipping a
+    # half-written binary. Same single-source limitation as s6/NextDNS: a
+    # fully compromised package server could swap both artifact and checksum.
+    && curl -fsSL "${TS_BASE}/${TS_TGZ}" -o "/tmp/${TS_TGZ}" \
+    && curl -fsSL "${TS_BASE}/${TS_TGZ}.sha256" -o "/tmp/${TS_TGZ}.sha256" \
+    && echo "$(tr -d '[:space:]' < "/tmp/${TS_TGZ}.sha256")  /tmp/${TS_TGZ}" | sha256sum -c - \
+    && tar -xz --strip-components=1 -C /usr/local/bin \
+        -f "/tmp/${TS_TGZ}" \
+        "tailscale_${TAILSCALE_VERSION}_${TS_ARCH}/tailscale" \
+        "tailscale_${TAILSCALE_VERSION}_${TS_ARCH}/tailscaled" \
+    && rm -f "/tmp/${TS_TGZ}" "/tmp/${TS_TGZ}.sha256"
 
 # =============================================================================
 #  Stage 3: Download NextDNS CLI
@@ -103,16 +111,30 @@ LABEL maintainer="Tailwag" \
 RUN apk add --no-cache \
     iptables \
     ip6tables \
+    iptables-legacy \
     iproute2 \
     ca-certificates \
     bash \
     bind-tools \
-    # Tailscale's critical iptables-legacy workaround:
-    # Alpine 3.19+ defaults to nf_tables backend, but Tailscale's firewall
-    # management expects iptables-legacy. Without these symlinks, exit node
-    # routing silently fails. This matches Tailscale's own Dockerfile.
-    && ln -sf /sbin/iptables-legacy  /sbin/iptables \
-    && ln -sf /sbin/ip6tables-legacy /sbin/ip6tables
+    # Tailscale's critical iptables-legacy workaround (see tailscale#17854):
+    # Alpine 3.19+ ships nftables as the default `iptables` backend. Exit-node
+    # / subnet-router NAT on hosts that only speak legacy iptables (Synology,
+    # some NAS kernels, older Docker hosts) silently fails unless the
+    # `iptables` / `ip6tables` names resolve to the legacy multi-call binary.
+    #
+    # Paths matter: modern Alpine packages install into /usr/sbin, NOT /sbin.
+    # The previous Dockerfile linked /sbin/iptables → /sbin/iptables-legacy,
+    # which never existed and produced broken dangling symlinks. Match the
+    # official Tailscale container recipe:
+    #   rm /usr/sbin/iptables && ln -s /usr/sbin/iptables-legacy ...
+    # Also install the `iptables-legacy` package explicitly — the base
+    # `iptables` package alone only provides the nft multi-call binary.
+    && rm -f /usr/sbin/iptables /usr/sbin/ip6tables \
+    && ln -s /usr/sbin/iptables-legacy  /usr/sbin/iptables \
+    && ln -s /usr/sbin/ip6tables-legacy /usr/sbin/ip6tables \
+    # Sanity: fail the build if the legacy backend is not actually selected.
+    && iptables -V 2>&1 | grep -qi legacy \
+    && ip6tables -V 2>&1 | grep -qi legacy
 
 # Copy s6-overlay from builder
 COPY --from=s6-downloader /s6/ /

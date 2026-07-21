@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck shell=bash
 # ==============================================================================
 #  TAILWAG  ·  Model 02
 #  A caching DNS relay for Tailscale networks. One script. Full stack.
@@ -22,7 +23,8 @@
 #    1. Add the Tailscale IP(s) as Custom Nameservers in your tailnet DNS
 #       https://login.tailscale.com/admin/dns
 #    2. Enable "Override local DNS"
-#    3. The script handles --accept-dns=false for you (see final prompt)
+#    3. The script handles --accept-dns=false for you via `tailscale set`
+#       (see final prompt; does not --reset other node settings)
 #
 #  Requirements: Debian/Ubuntu, Tailscale installed and authenticated
 #
@@ -292,16 +294,29 @@ SUMMARY
 # -- Loop prevention -----------------------------------------------------------
 
 if [[ -t 0 ]]; then
-    read -rp 'Run "tailscale up --accept-dns=false" on this server now? [y/N] ' REPLY
+    read -rp 'Run "tailscale set --accept-dns=false" on this server now? [y/N] ' REPLY
 elif [[ -r /dev/tty ]]; then
-    printf 'Run "tailscale up --accept-dns=false" on this server now? [y/N] ' >&2
+    printf 'Run "tailscale set --accept-dns=false" on this server now? [y/N] ' >&2
     read -r REPLY < /dev/tty
 else
     REPLY="n"
 fi
 
 if [[ "${REPLY,,}" == "y" ]]; then
+    # Prefer `tailscale set` so we only flip accept-dns and do not wipe other
+    # node settings (advertise-exit-node, routes, tags, ssh, etc.).
+    # The old path used `tailscale up --accept-dns=false --reset`, which
+    # resets the entire node config — a footgun on multi-role relays.
+    #
+    # Do NOT fall back to a bare `tailscale up --accept-dns=false`: on
+    # Tailscale 1.8–1.32 that form refuses to run when other non-default
+    # preferences are omitted, and on very old clients it can reset them.
+    # `set --accept-dns` has existed since stable 1.34.0.
     log "Applying --accept-dns=false ..."
-    $TS_BIN up --accept-dns=false --reset
-    log "Done. This relay will not consume its own DNS."
+    if $TS_BIN set --help 2>&1 | grep -q -- '--accept-dns'; then
+        $TS_BIN set --accept-dns=false
+        log "Done. This relay will not consume its own DNS."
+    else
+        die "This Tailscale build lacks 'set --accept-dns' (need ≥1.34). Upgrade Tailscale, then re-run or manually: tailscale set --accept-dns=false. Existing node settings were not changed."
+    fi
 fi

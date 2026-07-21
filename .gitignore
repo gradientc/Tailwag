@@ -1,0 +1,18 @@
+# Local secrets / compose env (never commit real keys)
+.env
+.env.*
+!.env.example
+docker/.env
+docker/.env.*
+!docker/.env.example
+
+# Editor / OS cruft
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# Amp orb local state
+.amp/resume-last-ran.txt
+.amp/portals/

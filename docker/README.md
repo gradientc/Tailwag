@@ -139,7 +139,7 @@ Should work out of the box. The image builds for `linux/arm64` natively. On a Pi
 
 ### Synology NAS
 
-Synology's Container Manager normally supports `NET_ADMIN` and TUN device mapping. Use the `docker-compose.yml` directly, or create the container manually with the equivalent capabilities. The iptables-legacy symlinks in the image handle Synology's older kernel.
+Synology's Container Manager normally supports `NET_ADMIN` and TUN device mapping. Use the `docker-compose.yml` directly, or create the container manually with the equivalent capabilities. The image installs `iptables-legacy` and rewrites `/usr/sbin/iptables` → legacy (see tailscale#17854) so exit-node/subnet NAT works on Synology's older kernel.
 
 ### Fly.io (geodistributed)
 

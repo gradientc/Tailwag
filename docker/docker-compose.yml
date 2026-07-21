@@ -14,7 +14,7 @@
 services:
   tailwag:
     build: .
-    # image: ghcr.io/tailwag/tailwag:latest  # or use a pre-built image
+    # image: ghcr.io/gradientc/tailwag:latest  # or use a pre-built image
     container_name: tailwag
     restart: unless-stopped
 
