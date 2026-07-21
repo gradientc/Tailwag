@@ -12,4 +12,8 @@ jobs:
         uses: ludeeus/action-shellcheck@2.0.0
         with:
           scandir: '.'
-          additional_files: 'tailwag.sh docker/run docker/init-config.sh docker/tailscale-up.sh docker/rootfs/etc/s6-overlay/s6-rc.d/svc-nextdns/run'
+          # ludeeus/action-shellcheck turns each entry into `find -name *ENTRY`,
+          # so ONLY basenames work (paths like docker/run or .agents/setup do
+          # not). Recursive scandir already picks up every *.sh; these cover
+          # the extensionless scripts that carry a shell shebang.
+          additional_files: 'setup resume run'
