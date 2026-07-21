@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# =============================================================================
+#  Tailwag · orb resume (runs on every orb wake; must finish in ~10s)
+#
+#  Fast, idempotent checks only. Never install packages here.
+# =============================================================================
+set -euo pipefail
+
+log() { printf '[tailwag-resume] %s\n' "$*"; }
+
+mkdir -p .amp
+date -u +%Y-%m-%dT%H:%M:%SZ > .amp/resume-last-ran.txt
+
+# Re-ensure docker group membership is reflected when possible (best-effort).
+if command -v docker >/dev/null 2>&1; then
+  if ! docker info >/dev/null 2>&1; then
+    log "Docker daemon not reachable; attempting start..."
+    if command -v systemctl >/dev/null 2>&1; then
+      sudo systemctl start docker 2>/dev/null || sudo service docker start 2>/dev/null || true
+    else
+      sudo service docker start 2>/dev/null || true
+    fi
+  fi
+  if docker info >/dev/null 2>&1; then
+    log "Docker daemon OK"
+  else
+    log "WARNING: Docker daemon still unreachable"
+  fi
+else
+  log "docker CLI not on PATH (setup may not have installed it)"
+fi
+
+if command -v shellcheck >/dev/null 2>&1; then
+  log "shellcheck OK ($(shellcheck --version 2>/dev/null | awk 'NR==2{print $2}'))"
+else
+  log "WARNING: shellcheck missing — re-run .agents/setup"
+fi
+
+if [[ -f docker/.env.example && ! -f docker/.env ]]; then
+  cp -- docker/.env.example docker/.env
+  log "Restored docker/.env from example"
+fi
+
+log "Resume complete."

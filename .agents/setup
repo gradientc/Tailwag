@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# =============================================================================
+#  Tailwag · orb setup (runs once on a fresh Amp orb, then snapshotted)
+#
+#  Installs the toolchains agents need to edit, lint, and smoke-test this
+#  repo: ShellCheck (mandatory for every .sh change), Docker + Buildx
+#  (container image path), and dig (healthcheck / DNS smoke tests).
+#
+#  No secrets are required for linting or image builds. Live Tailscale /
+#  NextDNS credentials are optional and only needed for a full runtime
+#  compose smoke test — leave docker/.env empty placeholders otherwise.
+# =============================================================================
+set -euo pipefail
+
+log() { printf '[tailwag-setup] %s\n' "$*"; }
+die() { printf '[tailwag-setup] ERROR: %s\n' "$*" >&2; exit 1; }
+
+export DEBIAN_FRONTEND=noninteractive
+
+log "Refreshing apt package index..."
+sudo apt-get update -qq
+
+# --- Core packages -----------------------------------------------------------
+# shellcheck: AGENTS.md mandates it before any .sh change
+# dnsutils:    dig used by Dockerfile HEALTHCHECK and manual DNS checks
+# curl/ca:     already present on most orbs; keep explicit for reliability
+# git:         already present; ensure it stays available
+log "Installing shellcheck, dnsutils, curl, ca-certificates, git..."
+sudo apt-get install -y -qq \
+  shellcheck \
+  dnsutils \
+  curl \
+  ca-certificates \
+  git \
+  jq
+
+# --- Docker (build + compose for docker/ path) -------------------------------
+if ! command -v docker >/dev/null 2>&1; then
+  log "Installing Docker Engine + Compose plugin..."
+  # Official convenience script is acceptable inside ephemeral orbs; prefer
+  # distro packages when the docker.io package is new enough for buildx.
+  if apt-cache show docker.io >/dev/null 2>&1; then
+    sudo apt-get install -y -qq docker.io docker-compose-v2 docker-buildx 2>/dev/null \
+      || sudo apt-get install -y -qq docker.io docker-compose-v2 \
+      || {
+        log "Distro docker packages incomplete; falling back to get.docker.com..."
+        curl -fsSL https://get.docker.com | sudo sh
+      }
+  else
+    curl -fsSL https://get.docker.com | sudo sh
+  fi
+else
+  log "Docker already present: $(docker --version 2>/dev/null || true)"
+fi
+
+# Ensure the current user can talk to the daemon without sudo when possible.
+if getent group docker >/dev/null 2>&1; then
+  if ! id -nG | tr ' ' '\n' | grep -qx docker; then
+    log "Adding $(id -un) to docker group (takes effect on new sessions)..."
+    sudo usermod -aG docker "$(id -un)" || true
+  fi
+fi
+
+# Start dockerd if installed but not running (common on fresh orbs).
+if command -v docker >/dev/null 2>&1; then
+  if ! docker info >/dev/null 2>&1; then
+    log "Starting Docker daemon..."
+    if command -v systemctl >/dev/null 2>&1; then
+      sudo systemctl enable --now docker 2>/dev/null || sudo service docker start 2>/dev/null || true
+    else
+      sudo service docker start 2>/dev/null || true
+    fi
+    # Brief wait for the socket
+    for _ in $(seq 1 20); do
+      docker info >/dev/null 2>&1 && break
+      sleep 0.5
+    done
+  fi
+fi
+
+# --- Env template (do not clobber existing .env) -----------------------------
+if [[ -f docker/.env.example ]]; then
+  if [[ ! -f docker/.env ]]; then
+    log "Creating docker/.env from .env.example (placeholders only)..."
+    cp -- docker/.env.example docker/.env
+  else
+    log "docker/.env already exists; leaving it untouched"
+  fi
+fi
+
+# --- Sanity checks -----------------------------------------------------------
+log "Verifying toolchain..."
+command -v shellcheck >/dev/null || die "shellcheck missing after install"
+command -v dig >/dev/null || die "dig missing after install"
+command -v git >/dev/null || die "git missing after install"
+shellcheck --version | head -n1 || true
+
+if command -v docker >/dev/null 2>&1; then
+  if docker info >/dev/null 2>&1; then
+    log "Docker OK: $(docker version --format '{{.Server.Version}}' 2>/dev/null || docker --version)"
+  else
+    log "WARNING: docker CLI present but daemon not reachable yet (resume may fix)"
+  fi
+else
+  log "WARNING: docker not installed — container builds will be unavailable"
+fi
+
+# --- Orb-specific agent guidance --------------------------------------------
+amp_config_dir="${HOME}/.config/amp"
+mkdir -p "${amp_config_dir}"
+cat > "${amp_config_dir}/AGENTS.md" << 'EOF'
+# Inside the Orb (Tailwag)
+
+This is a Bash + Docker repo. There is no Node/pnpm/Cargo toolchain to install.
+
+## Mandatory before editing any `.sh` file
+
+```bash
+shellcheck \
+  tailwag.sh \
+  docker/run \
+  docker/init-config.sh \
+  docker/tailscale-up.sh \
+  docker/rootfs/etc/s6-overlay/s6-rc.d/svc-nextdns/run \
+  docker/rootfs/etc/s6-overlay/scripts/init-config.sh \
+  docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh \
+  docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run
+```
+
+Also update `.github/workflows/shellcheck.yml` `additional_files` when adding scripts.
+
+## Duplicated scripts
+
+Edit `docker/rootfs/...` first, then mirror to the convenience copies under `docker/`:
+`init-config.sh`, `tailscale-up.sh`, `run`.
+
+## Docker smoke test (optional; needs real secrets)
+
+```bash
+cd docker
+# docker/.env may already exist from setup (placeholders). Fill NEXTDNS_PROFILE + TS_AUTHKEY
+# via project secrets or hand-edit only if you have throwaway keys.
+docker compose build
+# Full runtime needs NET_ADMIN + /dev/net/tun + real auth — skip if secrets absent.
+```
+
+Image-only build (no secrets):
+
+```bash
+docker build -t tailwag:orb ./docker
+```
+
+## Host installer
+
+`tailwag.sh` targets bare Debian/Ubuntu with an already-up Tailscale node.
+Do not run it inside the orb unless you intentionally install Tailscale + have a profile ID.
+
+## Critical invariants (do not regress)
+
+- Poll for Tailscale `100.` IP after `tailscale up` (host ExecStartPre + container tailscale-up.sh)
+- Keep iptables-legacy symlinks in the Dockerfile
+- Preserve `forwarder ts.net=100.100.100.100` / MagicDNS
+- `TS_ACCEPT_DNS=false` on relay nodes
+EOF
+
+log "Wrote ${amp_config_dir}/AGENTS.md"
+log "Setup complete."
