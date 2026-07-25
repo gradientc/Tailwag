@@ -210,11 +210,11 @@ The container image (the only thing that ships to production) is built from four
 
 **Current pins (source of truth)**
 
-| Component              | Current Pin | Latest (queried 2026-07-21) | Risk / Notes |
+| Component              | Current Pin | Latest (queried 2026-07-25) | Risk / Notes |
 |------------------------|-------------|-----------------------------|--------------|
 | `ALPINE_VERSION`      | 3.23.5     | 3.24.1 (2026-06-16) / 3.23.5 (2026-06-21) | Stayed on the 3.23 patch line (3.23.5, official release 2026-06-21; OpenSSL + Xen fixes) rather than jumping to 3.24.x in this pass. `iptables-legacy` package + `/usr/sbin` symlinks still required (see Dockerfile). **Safe**. |
 | `S6_OVERLAY_VERSION`  | 3.2.3.2    | 3.2.3.2 (2026-07-16)       | Patch in the 3.2.3.x line (updated skaware). Same tarball layout + SHA256 sidecars. Published 5 days before this bump — cooldown OK. **Safe**. |
-| `TAILSCALE_VERSION`   | 1.98.8     | 1.98.9 (2026-07-20, skipped) | **Known publish-lag risk** (see commit 7ddcec9 history). Bumped to 1.98.8 (published 2026-06-30; both amd64/arm64 .tgz + `.sha256` sidecars verified on pkgs.tailscale.com). 1.98.9 skipped (only ~12 h old as of 2026-07-21, violating the 2-day rule). 1.98.9 also includes six security advisories (TS-2026-004…009: SSH/Serve/Funnel path walks, service-IP packet filtering, etc.) — revisit after cooldown. 1.98.8 includes wireguard-go sleep/handshake fixes. Image installs `iptables-legacy` and rewrites `/usr/sbin/iptables` → legacy (tailscale#17854). |
+| `TAILSCALE_VERSION`   | 1.98.9     | 1.98.9 (2026-07-20)        | **Known publish-lag risk** (see commit 7ddcec9 history). Bumped to 1.98.9 (GitHub release 2026-07-20; both amd64/arm64 .tgz + `.sha256` sidecars verified on pkgs.tailscale.com 2026-07-25). ≥2-day cooldown satisfied (~5 days). Includes six security advisories (TS-2026-004…009: SSH/Serve/Funnel path walks, service-IP packet filtering, etc.). Image installs `iptables-legacy` and rewrites `/usr/sbin/iptables` → legacy (tailscale#17854). **Safe**. |
 | `NEXTDNS_VERSION`     | 1.47.3     | 1.47.3 (2026-06-03)        | Go 1.26.4 + x/net bump + OpenWrt DHCP CIDR strip. Full `checksums.txt` + per-arch tarballs. **Safe**. |
 
 **GitHub Actions** (pins in `.github/workflows/`):
