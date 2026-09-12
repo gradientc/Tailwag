@@ -43,7 +43,7 @@ There are two supported delivery mechanisms that share the same principles:
 │   ├── shellcheck.yml         # Enforces ShellCheck on a curated list of scripts (update when adding files)
 │   └── docker.yml             # Multi-arch build + push to ghcr.io/gradientc/tailwag
 └── docker/
-    ├── Dockerfile             # 4-stage build, checksums, Alpine 3.23, s6-overlay v3, pinned Tailscale/NextDNS
+    ├── Dockerfile             # 4-stage build, checksums, Alpine 3.24, s6-overlay v3, pinned Tailscale/NextDNS
     ├── docker-compose.yml
     ├── .env.example           # All user-configurable knobs documented here
     ├── fly.toml               # Fly.io deployment (full kernel networking, cheap geo distribution)
@@ -84,7 +84,8 @@ shellcheck \
   docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh \
   docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run \
   .agents/setup \
-  .agents/resume
+  .agents/resume \
+  tests/verify-relay-invariants.sh
 ```
 
 If you add a new `.sh` file, add it to the command above. Extensionless scripts must also be listed by **basename** in `.github/workflows/shellcheck.yml` `additional_files` (the action uses `find -name`, so path-valued entries are ignored).
@@ -210,12 +211,12 @@ The container image (the only thing that ships to production) is built from four
 
 **Current pins (source of truth)**
 
-| Component              | Current Pin | Latest (queried 2026-07-25) | Risk / Notes |
+| Component              | Current Pin | Latest (queried 2026-09-12) | Risk / Notes |
 |------------------------|-------------|-----------------------------|--------------|
-| `ALPINE_VERSION`      | 3.23.5     | 3.24.1 (2026-06-16) / 3.23.5 (2026-06-21) | Stayed on the 3.23 patch line (3.23.5, official release 2026-06-21; OpenSSL + Xen fixes) rather than jumping to 3.24.x in this pass. `iptables-legacy` package + `/usr/sbin` symlinks still required (see Dockerfile). **Safe**. |
-| `S6_OVERLAY_VERSION`  | 3.2.3.2    | 3.2.3.2 (2026-07-16)       | Patch in the 3.2.3.x line (updated skaware). Same tarball layout + SHA256 sidecars. Published 5 days before this bump — cooldown OK. **Safe**. |
-| `TAILSCALE_VERSION`   | 1.98.9     | 1.98.9 (2026-07-20)        | **Known publish-lag risk** (see commit 7ddcec9 history). Bumped to 1.98.9 (GitHub release 2026-07-20; both amd64/arm64 .tgz + `.sha256` sidecars verified on pkgs.tailscale.com 2026-07-25). ≥2-day cooldown satisfied (~5 days). Includes six security advisories (TS-2026-004…009: SSH/Serve/Funnel path walks, service-IP packet filtering, etc.). Image installs `iptables-legacy` and rewrites `/usr/sbin/iptables` → legacy (tailscale#17854). **Safe**. |
-| `NEXTDNS_VERSION`     | 1.47.3     | 1.47.3 (2026-06-03)        | Go 1.26.4 + x/net bump + OpenWrt DHCP CIDR strip. Full `checksums.txt` + per-arch tarballs. **Safe**. |
+| `ALPINE_VERSION`      | 3.24.1     | 3.24.1 (2026-06-13) / 3.23.5 (2026-06-21) | Jumped 3.23.5 → 3.24.1 (latest stable; 3.24.1 official 2026-06-13, cooldown elapsed). `iptables-legacy` 1.8.13-r0 still ships `/usr/sbin/iptables-legacy` + `ip6tables-legacy` on amd64 and arm64; `iptables` still provides `ip6tables`; `bind-tools` still provides `dig`. Dockerfile `iptables -V \| grep -qi legacy` guard unchanged. 3.24 notes (setuptools/GTK/qemu-binfmt) do not touch this image. **Safe**. |
+| `S6_OVERLAY_VERSION`  | 3.2.3.2    | 3.2.3.2 (2026-07-16)       | Already at latest non-prerelease. Same tarball layout + SHA256 sidecars for noarch + x86_64 + aarch64. **Safe**. |
+| `TAILSCALE_VERSION`   | 1.102.4    | 1.102.4 (2026-09-10)       | **Known publish-lag risk** (see commit 7ddcec9 history). GitHub v1.102.4 (2026-09-10T22:25:41Z) **and** pkgs.tailscale.com amd64/arm64 `.tgz` + `.tgz.sha256` all HTTP 200 (no lag this time). Calendar cooldown ≥2 days (query 2026-09-12). Changelog 1.98.9 → 1.102.4: no `--accept-dns` / `100.100.100.100` / CGNAT `100.` change; MagicDNS-disabled forwarder fix (1.102.3) is compatible with Tailwag’s `accept-dns=false` relay. Includes TS-2026-010/011 plus earlier 004…009. Image still forces `/usr/sbin/iptables` → legacy (tailscale#17854). **Safe**. |
+| `NEXTDNS_VERSION`     | 1.47.3     | 1.47.3 (2026-06-03)        | Already at latest non-prerelease. Go 1.26.4 + x/net bump + OpenWrt DHCP CIDR strip. Full `checksums.txt` lists linux_amd64 and linux_arm64 tarballs. **Safe**. |
 
 **GitHub Actions** (pins in `.github/workflows/`):
 

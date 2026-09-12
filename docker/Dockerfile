@@ -17,9 +17,9 @@
 
 # --- Build args --------------------------------------------------------------
 
-ARG ALPINE_VERSION=3.23.5
+ARG ALPINE_VERSION=3.24.1
 ARG S6_OVERLAY_VERSION=3.2.3.2
-ARG TAILSCALE_VERSION=1.98.9
+ARG TAILSCALE_VERSION=1.102.4
 ARG NEXTDNS_VERSION=1.47.3
 
 # =============================================================================
