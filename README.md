@@ -1,9 +1,11 @@
 <p align="center">
-
-<img src="https://img.shields.io/github/v/release/gradientc/Tailwag?label=version" alt="Version">
-
-<img src="https://img.shields.io/badge/platform-Debian%20%2F%20Ubuntu-orange" alt="Platform">
-
+  <a href="https://github.com/gradientc/Tailwag/releases">
+    <img src="https://img.shields.io/github/v/release/gradientc/Tailwag?label=version" alt="Version">
+  </a>
+  <img src="https://img.shields.io/badge/platform-Debian%20%2F%20Ubuntu-orange" alt="Platform">
+  <a href="https://github.com/gradientc/Tailwag/pkgs/container/tailwag">
+    <img src="https://img.shields.io/badge/ghcr.io-gradientc%2Ftailwag-blue?logo=github" alt="GHCR">
+  </a>
 </p>
 
 # 🐕 Tailwag
@@ -35,7 +37,7 @@ Every run produces the same configuration state. Safe to re-run.
 
 ## Requirements
 
-> Experimental docker version at [docker/README.md](docker/README.md)
+> Docker image: [`ghcr.io/gradientc/tailwag`](https://github.com/gradientc/Tailwag/pkgs/container/tailwag) · docs in [docker/README.md](docker/README.md)
 
 - **OS:** Debian or Ubuntu (uses `apt`)
 - **Tailscale:** Installed and authenticated (`tailscale status` must work)
@@ -92,11 +94,11 @@ journalctl -u nextdns -f    # Follow service logs
 ## How it works
 
 ```
-┌──────────────┐     Tailscale tunnel     ┌──────────────────┐     HTTPS/DoH     ┌──────────┐
-│  Any device  │ ──── DNS query ────────▶ │  Tailwag relay  │ ────────────────▶ │  NextDNS │
-│  on tailnet  │                          │  (NextDNS CLI)   │ ◀──────────────── │  cloud   │
+┌──────────────┐     Tailscale tunnel     ┌─────────────────┐     HTTPS/DoH     ┌─────────┐
+│  Any device  │ ──── DNS query ─────────▶ │  Tailwag relay  │ ────────────────▶ │  NextDNS │
+│  on tailnet  │                          │  (NextDNS CLI)   │ ◀─────────────── │  cloud   │
 └──────────────┘                          │  cache · filter  │                   └──────────┘
-                                          └──────────────────┘
+                                          └─────────────────┘
 ```
 
 1. Tailscale clients send DNS queries to the relay's Tailscale IP.

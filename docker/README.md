@@ -1,7 +1,12 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.0-blue" alt="Version">
+  <a href="https://github.com/gradientc/Tailwag/releases">
+    <img src="https://img.shields.io/github/v/release/gradientc/Tailwag?label=version" alt="Version">
+  </a>
   <img src="https://img.shields.io/badge/platform-Docker-2496ED?logo=docker&logoColor=white" alt="Docker">
   <img src="https://img.shields.io/badge/arch-amd64%20%7C%20arm64-orange" alt="Arch">
+  <a href="https://github.com/gradientc/Tailwag/pkgs/container/tailwag">
+    <img src="https://img.shields.io/badge/ghcr.io-gradientc%2Ftailwag-blue?logo=github" alt="GHCR">
+  </a>
 </p>
 
 # Tailwag Docker
@@ -16,7 +21,7 @@ Tailwag Docker packages [NextDNS](https://nextdns.io) CLI and [Tailscale](https:
 
 ## Why?
 
-The original [Tailwag](https://github.com/tailwag/tailwag) script turns a Debian/Ubuntu machine into a NextDNS relay for your tailnet. This is the same idea, but containerized: no host dependencies, no systemd plumbing, runs anywhere Docker runs.
+The original [Tailwag](https://github.com/gradientc/Tailwag) script turns a Debian/Ubuntu machine into a NextDNS relay for your tailnet. This is the same idea, but containerized: no host dependencies, no systemd plumbing, runs anywhere Docker runs.
 
 Self-hosting the NextDNS CLI (instead of using Tailscale's built-in NextDNS integration) gives you local caching without round-trips, conditional per-subnet profiles, and independence from Tailscale's DNS infrastructure.
 
@@ -47,8 +52,10 @@ docker run -d \
   -e NEXTDNS_PROFILE=<YOUR_NEXTDNS_PROFILE> \
   -v tailwag-state:/var/lib/tailscale \
   --restart unless-stopped \
-  ghcr.io/gradientc/tailwag:latest
+  ghcr.io/gradientc/tailwag:0.2.0
 ```
+
+Pinned tag `:0.2.0` matches this release. `:latest` tracks `main`.
 
 - **`TS_AUTHKEY`** — create one at [Tailscale › Settings › Keys](https://login.tailscale.com/admin/settings/keys). For long-lived deployments use an **OAuth client secret** (never expires) from [Tailscale › Settings › OAuth](https://login.tailscale.com/admin/settings/oauth).
 - **`NEXTDNS_PROFILE`** — the 6-7 character ID from [my.nextdns.io › Setup › Endpoints](https://my.nextdns.io) (e.g. `abc123`).
@@ -166,9 +173,9 @@ Railway, Render, and Cloud Run lack `NET_ADMIN` / `/dev/net/tun`. Set `TS_USERSP
 ## How it works
 
 ```
-┌──────────────┐     WireGuard tunnel     ┌─────────────────────────────┐     HTTPS/DoH     ┌──────────┐
-│  Any device  │ ──── DNS query ────────▶ │       Tailwag Docker        │ ────────────────▶ │  NextDNS │
-│  on tailnet  │                          │                             │ ◀──────────────── │  cloud   │
+┌──────────────┐     WireGuard tunnel     ┌────────────────────────────┐     HTTPS/DoH     ┌─────────┐
+│  Any device  │ ──── DNS query ─────────▶ │       Tailwag Docker        │ ────────────────▶ │  NextDNS │
+│  on tailnet  │                          │                             │ ◀─────────────── │  cloud   │
 └──────────────┘                          │  s6-overlay (PID 1)         │                   └──────────┘
                                           │  ├─ tailscaled (tunnel)     │
                                           │  └─ nextdns (cache+relay)   │
