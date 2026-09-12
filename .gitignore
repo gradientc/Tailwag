@@ -12,7 +12,3 @@ docker/.env.*
 *~
 .idea/
 .vscode/
-
-# Amp orb local state
-.amp/resume-last-ran.txt
-.amp/portals/

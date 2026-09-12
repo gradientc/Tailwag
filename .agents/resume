@@ -9,9 +9,6 @@ set -euo pipefail
 
 log() { printf '[tailwag-resume] %s\n' "$*"; }
 
-mkdir -p .amp
-date -u +%Y-%m-%dT%H:%M:%SZ > .amp/resume-last-ran.txt
-
 # Re-ensure docker group membership is reflected when possible (best-effort).
 if command -v docker >/dev/null 2>&1; then
   if ! docker info >/dev/null 2>&1; then
