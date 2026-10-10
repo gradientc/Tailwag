@@ -211,20 +211,20 @@ The container image (the only thing that ships to production) is built from four
 
 **Current pins (source of truth)**
 
-| Component              | Current Pin | Latest (queried 2026-09-12) | Risk / Notes |
+| Component              | Current Pin | Latest (queried 2026-10-10) | Risk / Notes |
 |------------------------|-------------|-----------------------------|--------------|
-| `ALPINE_VERSION`      | 3.24.1     | 3.24.1 (2026-06-13) / 3.23.5 (2026-06-21) | Jumped 3.23.5 → 3.24.1 (latest stable; 3.24.1 official 2026-06-13, cooldown elapsed). `iptables-legacy` 1.8.13-r0 still ships `/usr/sbin/iptables-legacy` + `ip6tables-legacy` on amd64 and arm64; `iptables` still provides `ip6tables`; `bind-tools` still provides `dig`. Dockerfile `iptables -V \| grep -qi legacy` guard unchanged. 3.24 notes (setuptools/GTK/qemu-binfmt) do not touch this image. **Safe**. |
-| `S6_OVERLAY_VERSION`  | 3.2.3.2    | 3.2.3.2 (2026-07-16)       | Already at latest non-prerelease. Same tarball layout + SHA256 sidecars for noarch + x86_64 + aarch64. **Safe**. |
-| `TAILSCALE_VERSION`   | 1.102.4    | 1.102.4 (2026-09-10)       | **Known publish-lag risk** (see commit 7ddcec9 history). GitHub v1.102.4 (2026-09-10T22:25:41Z) **and** pkgs.tailscale.com amd64/arm64 `.tgz` + `.tgz.sha256` all HTTP 200 (no lag this time). Calendar cooldown ≥2 days (query 2026-09-12). Changelog 1.98.9 → 1.102.4: no `--accept-dns` / `100.100.100.100` / CGNAT `100.` change; MagicDNS-disabled forwarder fix (1.102.3) is compatible with Tailwag’s `accept-dns=false` relay. Includes TS-2026-010/011 plus earlier 004…009. Image still forces `/usr/sbin/iptables` → legacy (tailscale#17854). **Safe**. |
-| `NEXTDNS_VERSION`     | 1.47.3     | 1.47.3 (2026-06-03)        | Already at latest non-prerelease. Go 1.26.4 + x/net bump + OpenWrt DHCP CIDR strip. Full `checksums.txt` lists linux_amd64 and linux_arm64 tarballs. **Safe**. |
+| `ALPINE_VERSION`      | 3.24.2     | 3.24.2 (2026-09-18)        | Point release 3.24.1 → 3.24.2 (Docker Hub `library/alpine` tag pushed 2026-09-18, cooldown elapsed). Same 3.24 branch, so the `iptables-legacy` `/usr/sbin` layout from 3.24.1 is expected to hold; the Dockerfile `iptables -V \| grep -qi legacy` guard fails the build if it does not. **Safe** (pending the CI multi-arch build). |
+| `S6_OVERLAY_VERSION`  | 3.2.3.2    | 3.2.3.2 (2026-07-16)       | Already at latest non-prerelease. noarch + x86_64 + aarch64 SHA256 sidecars re-verified 2026-10-10. **Safe**. |
+| `TAILSCALE_VERSION`   | 1.102.5    | 1.102.5 (2026-09-24); git tags v1.104.0 (2026-09-30) / v1.104.1 (2026-10-07) | **Publish lag in action again.** v1.104.x is tagged on GitHub but, as of 2026-10-10, neither Docker Hub nor GHCR `tailscale/tailscale` carries a v1.104 tag and `stable`/`latest` still point at v1.102.5. Treated as not yet released; do not bump until pkgs.tailscale.com serves the amd64/arm64 `.tgz` + `.tgz.sha256`. Net diff v1.102.4 → v1.102.5 touches only `cmd/containerboot` (not shipped by Tailwag), so `tailscale`/`tailscaled` behaviour is unchanged for the relay. **Safe**. |
+| `NEXTDNS_VERSION`     | 1.47.3     | 1.47.3 (2026-06-03); git tag v1.48.0 (2026-08-05) | `v1.48.0` exists as a git tag only: the GitHub release download URLs for `checksums.txt` and the linux_amd64/arm64 tarballs return 404 (2026-10-10), so the Dockerfile cannot fetch or verify it. 1.47.3 tarballs re-verified against `checksums.txt`. Bump when the release assets appear. **Safe**. |
 
 **GitHub Actions** (pins in `.github/workflows/`):
 
-- `actions/checkout@v6`
+- `actions/checkout@v7`
 - `docker/setup-qemu-action@v4`
 - `docker/setup-buildx-action@v4`
-- `docker/login-action@v4.2.0`
-- `docker/metadata-action@v6`
+- `docker/login-action@v4.6.0`
+- `docker/metadata-action@v6.2.0`
 - `docker/build-push-action@v7`
 - `ludeeus/action-shellcheck@2.0.0`
 
