@@ -25,7 +25,7 @@ primary_region = "iad"
   TS_ACCEPT_DNS = "false"
   TS_USERSPACE = "false"
   NEXTDNS_CACHE_SIZE = "10MB"
-  NEXTDNS_MAX_TTL = "5s"
+  NEXTDNS_MAX_TTL = "30s"
   NEXTDNS_LISTEN = ":53"
   # Required with an OAuth client secret (tskey-client-...): the tag must be
   # in your tailnet policy's tagOwners and granted to the OAuth client.

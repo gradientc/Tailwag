@@ -52,11 +52,16 @@ readonly VERSION="0.3.0"
 # home or small-office tailnet. Same default as the container image.
 CACHE_SIZE="10MB"
 
-# Max TTL served to clients. Does NOT affect the relay's own upstream cache.
-# 5s forces frequent re-queries so NextDNS config changes (e.g., whitelisting
-# a false positive) propagate to clients almost immediately.
+# Max TTL handed to clients. This caps only the TTL in the answers sent to
+# clients. The relay's own cache keeps the true upstream TTL, and NextDNS
+# flushes that cache automatically when the profile is updated (see
+# `nextdns run -h`, -cache-size). So this value is exactly how long a client
+# may keep an answer that a profile change has since invalidated. 30s keeps
+# allow/block edits near-immediate while cutting the re-queries that cross the
+# tunnel to a sixth of the old 5s default (phones on battery notice). Raise to
+# 60s for fewer still; browsers cap their own DNS cache near 60s anyway.
 # Reference: https://github.com/nextdns/nextdns/wiki/Cache-Configuration
-MAX_TTL="5s"
+MAX_TTL="30s"
 
 # Bind to the Tailscale IPv6 address in addition to IPv4.
 # Both are always assigned by Tailscale; dual-stack is free redundancy.

@@ -28,7 +28,7 @@ The problem: getting NextDNS to **bind only to your Tailscale address**, **survi
 | --- | --- |
 | **Install** | Adds the official NextDNS apt repo and installs the CLI |
 | **Configure** | Binds NextDNS to your Tailscale IPv4 (and IPv6) addresses only |
-| **Cache** | Enables a 10 MB in-memory cache with a 5 s client TTL for fast config propagation |
+| **Cache** | Enables a 10 MB in-memory cache with a 30 s client TTL; the relay cache is flushed on every profile change |
 | **Boot fix** | Installs a systemd drop-in so NextDNS waits for Tailscale before starting |
 | **Firewall** | Opens port 53 on `tailscale0` via UFW (if active) |
 | **Loop prevention** | Runs `tailscale set --accept-dns=false` on the relay itself, on every run (other node settings untouched) |
@@ -86,7 +86,7 @@ Defaults are set for home and small-office tailnets. Edit the variables at the t
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `CACHE_SIZE` | `10MB` | In-memory DNS cache size (same default as the container) |
-| `MAX_TTL` | `5s` | Max TTL served to clients — low value means NextDNS config changes propagate fast |
+| `MAX_TTL` | `30s` | Max TTL handed to clients. Bounds how long a client keeps an answer after a profile change; the relay cache itself is flushed by NextDNS on every profile update |
 | `ENABLE_IPV6` | `true` | Bind to Tailscale's IPv6 address as well (skipped automatically if the address is not on `tailscale0`, e.g. IPv6 disabled in the kernel) |
 
 One environment variable changes behaviour at run time:
@@ -144,4 +144,4 @@ No. Tailwag forwards `.ts.net` queries to `100.100.100.100` (Tailscale's interna
 
 **What if I change my NextDNS config (e.g., allowlist a domain)?**
 
-The 5-second `MAX_TTL` means clients pick up changes almost immediately. No restart needed.
+NextDNS flushes the relay cache the moment the profile changes, and the 30-second `MAX_TTL` bounds how long a client keeps an older answer. No restart needed.

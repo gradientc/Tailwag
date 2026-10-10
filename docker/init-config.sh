@@ -32,7 +32,7 @@ fi
 
 LISTEN="${NEXTDNS_LISTEN:-:53}"
 CACHE="${NEXTDNS_CACHE_SIZE:-10MB}"
-MAX_TTL="${NEXTDNS_MAX_TTL:-5s}"
+MAX_TTL="${NEXTDNS_MAX_TTL:-30s}"
 
 log "Writing /etc/nextdns.conf (profile=${NEXTDNS_PROFILE}, cache=${CACHE}, ttl=${MAX_TTL})"
 

@@ -131,7 +131,7 @@ The environment is the source of truth for the node's Tailscale preferences: `ta
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `NEXTDNS_CACHE_SIZE` | `10MB` | In-memory cache (2-4 MB for constrained devices) |
-| `NEXTDNS_MAX_TTL` | `5s` | Max TTL to clients — low = fast config propagation |
+| `NEXTDNS_MAX_TTL` | `30s` | Max TTL handed to clients; bounds how long a client keeps an answer after a profile change (the relay cache is flushed by NextDNS on every profile update) |
 | `NEXTDNS_LISTEN` | `:53` | Bind address for DNS queries (the health check queries this host and port) |
 
 ### Optional — Features
