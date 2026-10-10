@@ -2,6 +2,11 @@ name: ShellCheck
 
 on: [push, pull_request]
 
+# Read-only token: the action only checks out and lints (CodeQL
+# actions/missing-workflow-permissions, CWE-275).
+permissions:
+  contents: read
+
 jobs:
   shellcheck:
     name: ShellCheck

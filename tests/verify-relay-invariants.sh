@@ -145,6 +145,17 @@ need tailwag.sh "ExecStartPre"
 need tailwag.sh "wait-listen-addrs"
 need scripts/wait-listen-addrs "TAILWAG_WAIT_SECS"
 
+# --- Every workflow pins a top-level token scope ------------------------------
+# Without one, GITHUB_TOKEN gets the repository default, which is read-write on
+# older repos (CodeQL actions/missing-workflow-permissions, CWE-275). Jobs may
+# widen it for themselves.
+
+for wf in .github/workflows/*.yml; do
+    grep -qE '^permissions:' "${wf}" \
+        || die "${wf} has no top-level permissions: block (least privilege)"
+    log "ok  ${wf}: top-level permissions"
+done
+
 # --- Container fail-closed / health / env-as-truth (0.3.0) -------------------
 
 need docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run "FATAL: /dev/net/tun not found"

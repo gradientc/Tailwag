@@ -51,6 +51,10 @@ on:
     types:
       - published
 
+# Least-privilege default; build-and-push widens it for its own job only.
+permissions:
+  contents: read
+
 jobs:
   # PR-only: multi-arch build without push so arm64 regressions surface before
   # merge. The publish job below owns GHCR tags on main/release.
