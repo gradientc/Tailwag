@@ -12,3 +12,6 @@ docker/.env.*
 *~
 .idea/
 .vscode/
+
+# Local AI agent tool state (Grok CLI workflows / reports)
+.grok/

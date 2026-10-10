@@ -53,13 +53,15 @@ There are two supported delivery mechanisms that share the same principles:
     └── rootfs/                # What actually ends up in the image (COPY rootfs /)
         └── etc/s6-overlay/
             ├── scripts/           # Real init-config.sh and tailscale-up.sh (authoritative)
-            └── s6-rc.d/
-                ├── init-config/   # oneshot – validates + writes /etc/nextdns.conf
-                ├── svc-tailscaled/ # longrun – the daemon (userspace fallback, firewall mode override)
-                ├── tailscale-up/   # oneshot – waits for socket + 100. IP, then `tailscale up`
-                ├── svc-nextdns/    # longrun – `nextdns run -config-file /etc/nextdns.conf`
-                └── user/contents.d/ # declares the startup set
+            ├── s6-rc.d/
+            │   ├── init-config/   # oneshot – validates + writes /etc/nextdns.conf
+            │   ├── svc-tailscaled/ # longrun – the daemon (userspace fallback, firewall mode override)
+            │   ├── tailscale-up/   # oneshot – waits for socket + 100. IP, then `tailscale up`
+            │   └── svc-nextdns/    # longrun – `nextdns run -config-file /etc/nextdns.conf`
+            └── user-bundles.d/user/contents.d/ # declares the startup set
 ```
+
+**s6 `user` bundle location:** the startup set lives in `user-bundles.d/user/contents.d/`, **not** `s6-rc.d/user/`. s6-overlay ≥ 3.2.3 ships `user-bundles.d/user` (with its own `type` file) and prints a deprecation warning on every boot if `s6-rc.d/user` exists. When adding a service, create its source dir under `s6-rc.d/` and an empty file named after it in `user-bundles.d/user/contents.d/`.
 
 **Duplication reality check**  
 `docker/{init-config.sh,tailscale-up.sh,run}` are currently byte-identical copies of files under `rootfs/`. The top-level copies are not packaged into the image; only `rootfs/` is.  
@@ -211,20 +213,20 @@ The container image (the only thing that ships to production) is built from four
 
 **Current pins (source of truth)**
 
-| Component              | Current Pin | Latest (queried 2026-09-12) | Risk / Notes |
+| Component              | Current Pin | Latest (queried 2026-10-10) | Risk / Notes |
 |------------------------|-------------|-----------------------------|--------------|
-| `ALPINE_VERSION`      | 3.24.1     | 3.24.1 (2026-06-13) / 3.23.5 (2026-06-21) | Jumped 3.23.5 → 3.24.1 (latest stable; 3.24.1 official 2026-06-13, cooldown elapsed). `iptables-legacy` 1.8.13-r0 still ships `/usr/sbin/iptables-legacy` + `ip6tables-legacy` on amd64 and arm64; `iptables` still provides `ip6tables`; `bind-tools` still provides `dig`. Dockerfile `iptables -V \| grep -qi legacy` guard unchanged. 3.24 notes (setuptools/GTK/qemu-binfmt) do not touch this image. **Safe**. |
+| `ALPINE_VERSION`      | 3.24.2     | 3.24.2 (2026-09-17)        | Patch bump 3.24.1 → 3.24.2 (official 2026-09-17, ~3 weeks of aging; security fixes + AMD/Intel microcode). `iptables` / `iptables-legacy` still 1.8.13-r0, `bind-tools` 9.20.29-r0, `bash` 5.3.9-r1. Build-time `iptables -V \| grep -qi legacy` guard passes on amd64 + arm64. **Safe**. |
 | `S6_OVERLAY_VERSION`  | 3.2.3.2    | 3.2.3.2 (2026-07-16)       | Already at latest non-prerelease. Same tarball layout + SHA256 sidecars for noarch + x86_64 + aarch64. **Safe**. |
-| `TAILSCALE_VERSION`   | 1.102.4    | 1.102.4 (2026-09-10)       | **Known publish-lag risk** (see commit 7ddcec9 history). GitHub v1.102.4 (2026-09-10T22:25:41Z) **and** pkgs.tailscale.com amd64/arm64 `.tgz` + `.tgz.sha256` all HTTP 200 (no lag this time). Calendar cooldown ≥2 days (query 2026-09-12). Changelog 1.98.9 → 1.102.4: no `--accept-dns` / `100.100.100.100` / CGNAT `100.` change; MagicDNS-disabled forwarder fix (1.102.3) is compatible with Tailwag’s `accept-dns=false` relay. Includes TS-2026-010/011 plus earlier 004…009. Image still forces `/usr/sbin/iptables` → legacy (tailscale#17854). **Safe**. |
+| `TAILSCALE_VERSION`   | 1.102.5    | 1.104.1 (2026-10-07) / 1.102.5 (2026-09-29) | **Deliberately held on the 1.102.x line.** 1.102.4 → 1.102.5 fixes tailscaled exiting when a client falls behind on status updates (it now reconnects). 1.104.1 was skipped: only 3 days old at query time, rebuilt on Go 1.27, and has an open Linux regression where TLS-inspecting middleboxes reset control-plane HTTPS because the ClientHello now offers ML-KEM (tailscale#21708 — node comes up logged out), plus a direct-path recovery regression (tailscale#21728). Re-evaluate 1.104.x once those are fixed. pkgs.tailscale.com amd64/arm64 `.tgz` + `.tgz.sha256` HTTP 200. **Known publish-lag risk** (see commit 7ddcec9 history). Image still forces `/usr/sbin/iptables` → legacy (tailscale#17854). **Safe**. |
 | `NEXTDNS_VERSION`     | 1.47.3     | 1.47.3 (2026-06-03)        | Already at latest non-prerelease. Go 1.26.4 + x/net bump + OpenWrt DHCP CIDR strip. Full `checksums.txt` lists linux_amd64 and linux_arm64 tarballs. **Safe**. |
 
 **GitHub Actions** (pins in `.github/workflows/`):
 
-- `actions/checkout@v6`
+- `actions/checkout@v7`
 - `docker/setup-qemu-action@v4`
 - `docker/setup-buildx-action@v4`
-- `docker/login-action@v4.2.0`
-- `docker/metadata-action@v6`
+- `docker/login-action@v4.6.0`
+- `docker/metadata-action@v6.2.0`
 - `docker/build-push-action@v7`
 - `ludeeus/action-shellcheck@2.0.0`
 
