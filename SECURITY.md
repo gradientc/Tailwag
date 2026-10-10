@@ -26,11 +26,21 @@ This means a compromised `repo.nextdns.io` or a network-level MITM could substit
 
 ### `curl | bash` install pattern
 
-The one-liner install (`curl ... | sudo bash`) is convenient but inherits the risks of the transport layer — DNS hijacking or BGP hijacking of `raw.githubusercontent.com` could serve a modified script. Mitigations:
+The one-liner install (`curl ... | sudo bash`) is convenient but inherits the risks of the transport layer — DNS hijacking or BGP hijacking of `github.com` could serve a modified script. Mitigations:
 
+- The documented URLs point at release assets (`releases/latest/download/tailwag.sh`), not the moving `main` branch, so what you run is a reviewed, tagged release.
+- Each release carries a GitHub artifact attestation for `tailwag.sh`, produced by the release workflow. `gh attestation verify tailwag.sh -R gradientc/Tailwag` proves the file came from this repository's workflow at that tag. The `SHA256SUMS` asset only detects corruption, since it ships in the same release.
 - GitHub enforces HTTPS with a CA-pinned certificate, making passive MITM impractical.
 - The script validates all its own inputs (profile ID, Tailscale addresses) and refuses to proceed on unexpected values.
 - For sensitive environments, use the manual download method, inspect the script, and run it locally.
+
+### Docker image — provenance
+
+Published images carry a GitHub artifact attestation (SLSA build provenance), stored in GitHub's attestation store rather than as extra manifests in the registry:
+
+```bash
+gh attestation verify oci://ghcr.io/gradientc/tailwag:0.3.0 -R gradientc/Tailwag
+```
 
 ### Docker image — binary checksums
 

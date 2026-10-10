@@ -46,7 +46,8 @@ There are two supported delivery mechanisms that share the same principles:
 ├── .github/workflows/
 │   ├── shellcheck.yml         # Enforces ShellCheck on a curated list of scripts (update when adding files)
 │   ├── checks.yml             # Runs tests/verify-relay-invariants.sh; on release, tag must equal tailwag.sh VERSION
-│   └── docker.yml             # Multi-arch build + push to ghcr.io/gradientc/tailwag
+│   ├── docker.yml             # Multi-arch build; publishes :edge (main, image paths only) and semver + :latest (releases)
+│   └── ghcr-cleanup.yml       # Manual, dry-run-by-default pruning of orphaned GHCR versions (multi-arch aware)
 └── docker/
     ├── Dockerfile             # 4-stage build, checksums, Alpine 3.24, s6-overlay v3, pinned Tailscale/NextDNS
     ├── docker-compose.yml
@@ -252,6 +253,8 @@ The container image (the only thing that ships to production) is built from four
 - `docker/metadata-action@v6.2.0`
 - `docker/build-push-action@v7`
 - `ludeeus/action-shellcheck@2.0.0`
+- `actions/attest-build-provenance@v4`
+- `dataaxiom/ghcr-cleanup-action@v1.2.2`
 
 These are kept on recent tags. **Dependabot + the 2-day cooldown** (see below) will open PRs for them after the aging period.
 
@@ -267,7 +270,7 @@ This is the mechanism behind the "wait 48 h before merging Dependa PRs" advice y
 
 **Policy for this repo**
 
-- Automated parts (the 7 Actions): Dependabot will propose updates only after the 2-day cooldown. Review + merge normally.
+- Automated parts (the 9 Actions): Dependabot will propose updates only after the 2-day cooldown. Review + merge normally.
 - Manual parts (the 4 ARGs): humans must still wait **≥2 days after the upstream release date** before merging any version bump, even if a colleague or Dependabot (for other reasons) opens a PR early.
 - The recent Tailscale publish-lag incident is the canonical example of why the extra human check is required.
 
@@ -295,8 +298,10 @@ When you touch any of the four ARG lines, you **must** also update this table an
 ## Release & Versioning
 
 - `tailwag.sh` carries its own `readonly VERSION="0.3.0"` constant. `checks.yml` fails a published release whose tag (no `v` prefix, e.g. `0.2.2`) differs from it, so bump `VERSION` in the release PR, not after.
-- Docker image versions are controlled by the four `ARG` lines at the top of the Dockerfile.
-- On release, the GitHub Actions workflow tags the image with semver + `latest`.
+- On release, `checks.yml` attaches `tailwag.sh`, `SHA256SUMS` and an artifact attestation to the GitHub release. The README install commands use `releases/latest/download/`, so a release without these assets breaks them.
+- Docker image component versions are controlled by the four `ARG` lines at the top of the Dockerfile.
+- Image tags (`docker.yml`): a full release gets `X.Y.Z`, `X.Y` and `latest`; a prerelease gets `X.Y.Z` and `X.Y` only; the bare major tag starts at 1.0. A push to `main` that touches `docker/**` (Markdown excluded) or the workflow publishes `edge`; nothing else on `main` publishes. Provenance is a GitHub artifact attestation (`provenance: false` in BuildKit), so GHCR does not fill up with `unknown/unknown` attestation manifests.
+- Never delete untagged GHCR versions by hand: the per-platform manifests of every tagged image are untagged. Use `ghcr-cleanup.yml` (dry run first).
 - Update the version badges in both README files when cutting a release.
 
 ---

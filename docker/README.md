@@ -53,7 +53,14 @@ docker run -d \
   ghcr.io/gradientc/tailwag:0.3.0
 ```
 
-Pinned tag `:0.3.0` matches this release. `:latest` tracks `main`.
+| Tag | Points at |
+| --- | --- |
+| `:0.3.0` | That exact release. Pin this in production |
+| `:0.3` | Newest patch release of 0.3 |
+| `:latest` | Newest full release (never a prerelease) |
+| `:edge` | Tip of `main`, rebuilt only when the image's inputs change. For testing |
+
+There is no floating `:0` tag: 0.x releases make no compatibility promise across minors. A stale `:0` from 0.2.1 may still exist in the registry; do not use it. Verify an image's origin with `gh attestation verify oci://ghcr.io/gradientc/tailwag:0.3.0 -R gradientc/Tailwag`.
 
 - **`TS_AUTHKEY`** — create one at [Tailscale › Settings › Keys](https://login.tailscale.com/admin/settings/keys). For long-lived deployments use an **OAuth client secret** (never expires) from [Tailscale › Settings › OAuth](https://login.tailscale.com/admin/settings/oauth); it also needs `-e TS_EXTRA_ARGS=--advertise-tags=tag:dns-relay` (see [Authentication](#authentication)).
 - **`NEXTDNS_PROFILE`** — the 6-7 character ID from [my.nextdns.io › Setup › Endpoints](https://my.nextdns.io) (e.g. `abc123`).

@@ -46,25 +46,32 @@ Every run produces the same configuration state. Safe to re-run.
 
 ## Quick start
 
+Every [GitHub release](https://github.com/gradientc/Tailwag/releases) carries `tailwag.sh`, a `SHA256SUMS` file and a signed build attestation. The commands below fetch the latest release, not the moving `main` branch.
+
 **One-line install (interactive)**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/gradientc/Tailwag/main/tailwag.sh | sudo bash
+curl -fsSL https://github.com/gradientc/Tailwag/releases/latest/download/tailwag.sh | sudo bash
 ```
 
 **One-line install (with argument)**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/gradientc/Tailwag/main/tailwag.sh | sudo bash -s -- abc123
+curl -fsSL https://github.com/gradientc/Tailwag/releases/latest/download/tailwag.sh | sudo bash -s -- abc123
 ```
 
-**Manual run**
+**Verified manual run (recommended)**
 
 ```bash
-curl -fsSL -o tailwag.sh https://raw.githubusercontent.com/gradientc/Tailwag/main/tailwag.sh
-chmod +x tailwag.sh
-sudo ./tailwag.sh abc123
+curl -fsSLO https://github.com/gradientc/Tailwag/releases/latest/download/tailwag.sh
+curl -fsSLO https://github.com/gradientc/Tailwag/releases/latest/download/SHA256SUMS
+sha256sum -c SHA256SUMS
+# Optional, stronger: proves the file was built by this repo's release workflow
+gh attestation verify tailwag.sh -R gradientc/Tailwag
+sudo bash tailwag.sh abc123
 ```
+
+`SHA256SUMS` comes from the same release, so it catches corruption, not a tampered release; the attestation is the check that does. To pin a version, replace `latest/download` with `download/<tag>` (e.g. `download/0.3.0`). The development version is at `https://raw.githubusercontent.com/gradientc/Tailwag/main/tailwag.sh`.
 
 Then, in the [Tailscale admin console](https://login.tailscale.com/admin/dns):
 
