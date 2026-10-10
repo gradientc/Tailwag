@@ -48,8 +48,9 @@ readonly VERSION="0.3.0"
 # These defaults are good for home/small-office tailnets. Adjust if you know
 # what you're doing; the comments explain the trade-offs.
 
-# In-memory cache. 10-20 MB covers most tailnets without meaningful RAM cost.
-CACHE_SIZE="20MB"
+# In-memory cache. 10 MB holds tens of thousands of records, enough for any
+# home or small-office tailnet. Same default as the container image.
+CACHE_SIZE="10MB"
 
 # Max TTL served to clients. Does NOT affect the relay's own upstream cache.
 # 5s forces frequent re-queries so NextDNS config changes (e.g., whitelisting
