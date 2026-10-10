@@ -13,8 +13,6 @@
 
 **A portable, caching NextDNS relay for Tailscale networks. One container. Full stack.**
 
-:warning: This is an experimental docker version of Tailwag. It is not yet tested.
-
 Tailwag Docker packages [NextDNS](https://nextdns.io) CLI and [Tailscale](https://tailscale.com) into a single, minimal container with proper process supervision, persistent state, and multi-arch support. Deploy it on a Raspberry Pi, a Synology NAS, a Hetzner VPS, or across 30 Fly.io regions — same image, same config.
 
 ---
@@ -31,7 +29,7 @@ Self-hosting the NextDNS CLI (instead of using Tailscale's built-in NextDNS inte
 | --- | --- |
 | **Alpine Linux** | Minimal base (~5 MB), multi-arch, matches Tailscale's own image |
 | **s6-overlay v3** | PID 1, process supervision, dependency ordering, clean shutdown |
-| **tailscaled** | WireGuard tunnel — kernel TUN mode by default, userspace fallback |
+| **tailscaled** | WireGuard tunnel — kernel TUN mode; userspace only as an explicit, degraded opt-in |
 | **NextDNS CLI** | DNS53-to-DoH proxy with in-memory LRU cache |
 
 Total footprint: ~80 MB image, ~60 MB RAM at runtime with a 10 MB cache.
@@ -52,12 +50,12 @@ docker run -d \
   -e NEXTDNS_PROFILE=<YOUR_NEXTDNS_PROFILE> \
   -v tailwag-state:/var/lib/tailscale \
   --restart unless-stopped \
-  ghcr.io/gradientc/tailwag:0.2.0
+  ghcr.io/gradientc/tailwag:0.3.0
 ```
 
-Pinned tag `:0.2.0` matches this release. `:latest` tracks `main`.
+Pinned tag `:0.3.0` matches this release. `:latest` tracks `main`.
 
-- **`TS_AUTHKEY`** — create one at [Tailscale › Settings › Keys](https://login.tailscale.com/admin/settings/keys). For long-lived deployments use an **OAuth client secret** (never expires) from [Tailscale › Settings › OAuth](https://login.tailscale.com/admin/settings/oauth).
+- **`TS_AUTHKEY`** — create one at [Tailscale › Settings › Keys](https://login.tailscale.com/admin/settings/keys). For long-lived deployments use an **OAuth client secret** (never expires) from [Tailscale › Settings › OAuth](https://login.tailscale.com/admin/settings/oauth); it also needs `-e TS_EXTRA_ARGS=--advertise-tags=tag:dns-relay` (see [Authentication](#authentication)).
 - **`NEXTDNS_PROFILE`** — the 6-7 character ID from [my.nextdns.io › Setup › Endpoints](https://my.nextdns.io) (e.g. `abc123`).
 
 Check logs with `docker logs -f tailwag`.
@@ -84,9 +82,23 @@ Then, in the [Tailscale admin console](https://login.tailscale.com/admin/dns):
 2. Enable **Override local DNS**
 3. For redundancy, deploy a second Tailwag on another machine
 
+## Upgrading to 0.3.0
+
+0.3.0 changes three behaviours. Read this before pulling the new tag.
+
+| Change | What you see | What to do |
+| --- | --- | --- |
+| **No silent userspace fallback** (breaking) | Without `/dev/net/tun` the container logs `tailscaled: FATAL: /dev/net/tun not found` and stops, instead of starting in userspace mode | Pass `--device /dev/net/tun --cap-add NET_ADMIN` (the compose file already does). Only on platforms with no TUN device, set `TS_USERSPACE=true` explicitly and accept the [degraded mode](#restricted-platforms) |
+| **`tailscale up --reset` on every start** | Changing `EXIT_NODE`, `SUBNET_ROUTES` or `TS_EXTRA_ARGS` between restarts now works (it used to stop the container with "requires mentioning all non-default flags") | Treat the env as the source of truth. Preferences changed with `tailscale set` inside the container are reverted on restart |
+| **Health check tests the relay path** | `unhealthy` when the node has no `100.x` address or NextDNS cannot resolve upstream (SERVFAIL, REFUSED, empty answer), not only when nothing answers on loopback | Nothing, unless you relied on the old always-green check. `start-period` is now 180 s |
+
+An OAuth client secret without `--advertise-tags` in `TS_EXTRA_ARGS` now fails at start with an explicit message instead of a failed login.
+
 ## Configuration
 
 All configuration is through environment variables in `.env`. See [`.env.example`](.env.example) for the full reference.
+
+The environment is the source of truth for the node's Tailscale preferences: `tailscale up --reset` runs on every start, so anything not expressed in the env (including changes made with `tailscale set` inside the container) is reset to its default on restart.
 
 ### Required
 
@@ -101,9 +113,9 @@ All configuration is through environment variables in `.env`. See [`.env.example
 | --- | --- | --- |
 | `TS_HOSTNAME` | `tailwag` | Node name on your tailnet |
 | `TS_ACCEPT_DNS` | `false` | Accept tailnet DNS (must be false for relay nodes) |
-| `TS_USERSPACE` | `false` | Userspace networking (no TUN device needed) |
-| `TS_EXTRA_ARGS` | | Extra flags for `tailscale up` |
-| `TS_DEBUG_FIREWALL_MODE` | | Override: `nftables` or `iptables` |
+| `TS_USERSPACE` | `false` | Userspace networking (no TUN device needed). Explicit, degraded opt-in; without it a missing `/dev/net/tun` is fatal |
+| `TS_EXTRA_ARGS` | | Extra flags for `tailscale up`, split on whitespace. Required with an OAuth client secret: `--advertise-tags=tag:dns-relay`. Keep it unchanged after first boot |
+| `TS_DEBUG_FIREWALL_MODE` | | Leave unset (auto) or `iptables`. Do not set `nftables`: the image forces iptables-legacy ([tailscale#17854](https://github.com/tailscale/tailscale/issues/17854)) |
 
 ### Optional — NextDNS
 
@@ -122,9 +134,24 @@ All configuration is through environment variables in `.env`. See [`.env.example
 
 ## Authentication
 
-**OAuth client secrets** (recommended for production) never expire and create tag-owned nodes with automatic key-expiry disabling. Create one at [Tailscale OAuth settings](https://login.tailscale.com/admin/settings/oauth) with minimal scopes.
+**OAuth client secrets** (recommended for production) never expire and create tag-owned nodes with automatic key-expiry disabling. Because the node is owned by a tag, not a user, `tailscale up` with a `tskey-client-…` secret **requires** `--advertise-tags`. Tailwag refuses to start without it.
 
-**Auth keys** work for testing but expire after 90 days maximum. Once the container has authenticated and state is persisted, the key is no longer needed — `TS_AUTHKEY` can be removed from `.env` after first boot.
+1. In your [tailnet policy file](https://login.tailscale.com/admin/acls), declare the tag and who may own it:
+   ```json
+   "tagOwners": {
+     "tag:dns-relay": ["autogroup:admin"]
+   }
+   ```
+   Make sure your ACLs/grants let tailnet clients reach `tag:dns-relay` on port 53 (UDP and TCP).
+2. Create an OAuth client at [Tailscale › Settings › OAuth](https://login.tailscale.com/admin/settings/oauth) with the minimal scope: **`auth_keys` (write)**, and select `tag:dns-relay` as a tag it may assign.
+3. Configure the container:
+   ```bash
+   TS_AUTHKEY=tskey-client-...
+   TS_EXTRA_ARGS=--advertise-tags=tag:dns-relay
+   ```
+   Keys minted from an OAuth secret are ephemeral and not pre-approved unless you say otherwise. A relay must not be ephemeral, so append the attributes to the secret: `TS_AUTHKEY='tskey-client-...?ephemeral=false&preauthorized=true'`.
+
+**Auth keys** work for testing but expire after 90 days maximum. Once the container has authenticated and state is persisted, the key is no longer needed — `TS_AUTHKEY` can be removed from `.env` after first boot. Leave `TS_EXTRA_ARGS` as it was: `--reset` would otherwise drop the advertised tags on the next start.
 
 ## Exit node
 
@@ -154,7 +181,8 @@ Fly.io's Firecracker microVMs provide full kernel networking — no capability h
 
 ```bash
 fly launch --no-deploy
-fly secrets set TS_AUTHKEY=tskey-client-... NEXTDNS_PROFILE=abc123
+fly secrets set TS_AUTHKEY='tskey-client-...?ephemeral=false&preauthorized=true' NEXTDNS_PROFILE=abc123
+# OAuth secrets need tags: set TS_EXTRA_ARGS = "--advertise-tags=tag:dns-relay" in fly.toml [env]
 fly volumes create tailwag_state --size 1 --region iad
 fly deploy
 
@@ -166,9 +194,17 @@ fly scale count 3 --region ams,iad,sin
 
 Each region gets its own Tailscale IP. Add all of them as nameservers in the admin console for automatic geographic failover.
 
+`fly.toml` deliberately has no `[[services]]` section: all DNS traffic arrives over the tailnet, and a UDP service on port 53 could be published on Fly's public edge as an open resolver.
+
 ### Restricted platforms
 
-Railway, Render, and Cloud Run lack `NET_ADMIN` / `/dev/net/tun`. Set `TS_USERSPACE=true` for basic tailnet connectivity, but note that exit node functionality will not be available.
+Railway, Render, and Cloud Run lack `NET_ADMIN` / `/dev/net/tun`. Since 0.3.0 the container refuses to start there unless you set `TS_USERSPACE=true` explicitly. That mode is **degraded**:
+
+- No exit node or subnet routing.
+- No kernel `tailscale0` interface, so the container has no route to `100.100.100.100`. MagicDNS forwarding (`forwarder ts.net=100.100.100.100`) is therefore expected to fail, which means tailnet clients using this relay cannot resolve `.ts.net` names through it.
+- Peer queries to the node's `100.x` address reach NextDNS only through tailscaled's userspace netstack, not the kernel.
+
+The project has not yet confirmed either of the last two points against a live tailnet in userspace mode. Test with `dig @127.0.0.1 <node>.<tailnet>.ts.net` inside the container and from a peer against the node's `100.x` address before relying on it. The health check queries `127.0.0.1` in this mode, so it cannot detect either failure.
 
 ## How it works
 
@@ -185,11 +221,11 @@ Railway, Render, and Cloud Run lack `NET_ADMIN` / `/dev/net/tun`. Set `TS_USERSP
 ### Boot sequence
 
 1. **init-config** (oneshot) — validates env vars, writes `/etc/nextdns.conf`
-2. **svc-tailscaled** (longrun) — starts the Tailscale daemon
-3. **svc-tailscale-up** (oneshot) — authenticates, waits for 100.x.x.x IP assignment
+2. **svc-tailscaled** (longrun) — starts the Tailscale daemon (kernel TUN; fatal if `/dev/net/tun` is missing and `TS_USERSPACE` is not `true`)
+3. **tailscale-up** (oneshot) — waits up to 30 s for the daemon socket, runs `tailscale up --reset` (bounded to 120 s), then waits up to 90 s for a `100.x` address
 4. **svc-nextdns** (longrun) — starts NextDNS relay bound to port 53
 
-If either longrun service crashes, s6-overlay stops the container so Docker's restart policy can recover it cleanly. No "zombie container" problem.
+**Failure handling.** If bring-up fails (a oneshot exits non-zero, or times out), `S6_BEHAVIOUR_IF_STAGE2_FAILS=2` stops the container, so Docker's restart policy retries from a clean start. After boot, s6 supervises the longruns: if `tailscaled` or `nextdns` crashes, s6 restarts it in place and the container keeps running. A failure that persists shows up as `unhealthy` in the health check; plain Docker does not restart unhealthy containers, so use an orchestrator or an autoheal sidecar if you want that.
 
 ## Useful commands
 
@@ -200,8 +236,9 @@ docker compose logs -f
 # Check Tailscale status
 docker compose exec tailwag tailscale status
 
-# Check NextDNS relay health
-docker compose exec tailwag dig +short @127.0.0.1 example.com
+# Check NextDNS relay health (same probe as the HEALTHCHECK)
+docker compose exec tailwag tailwag-health
+docker inspect --format '{{json .State.Health}}' tailwag
 
 # View NextDNS config
 docker compose exec tailwag cat /etc/nextdns.conf
@@ -236,4 +273,4 @@ The 5-second `MAX_TTL` default means clients pick up changes almost immediately.
 ~60 MB with a 10 MB cache. Should run comfortably in 128 MB. For extremely constrained environments, set `NEXTDNS_CACHE_SIZE=2MB`.
 
 **Can I use this without the exit node feature?**
-Yes. The exit node is entirely opt-in via `EXIT_NODE=true`. Without it, the container only needs `CAP_NET_ADMIN` and the TUN device for basic Tailscale connectivity.
+Yes. The exit node is entirely opt-in via `EXIT_NODE=true`. Without it, the container still needs `CAP_NET_ADMIN` and the TUN device: the relay itself runs in kernel TUN mode.

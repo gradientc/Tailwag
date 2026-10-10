@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# =============================================================================
+#  tailwag-health  ·  Docker HEALTHCHECK
+#  Tests the product path, not just "something answers on loopback".
+#
+#  The old check was `dig +short @127.0.0.1 example.com || exit 1`. Two holes:
+#    - dig exits 0 for any reply, SERVFAIL included (with empty +short
+#      output), so a broken NextDNS upstream still reported healthy.
+#    - Loopback answers as soon as nextdns is up, whether or not the node
+#      has a Tailscale address that peers can send queries to.
+#
+#  This check:
+#    1. requires `tailscale ip -4` to return a 100.x address;
+#    2. queries the control domain against that address (kernel TUN mode),
+#       or 127.0.0.1 when TS_USERSPACE=true (no kernel interface to query);
+#    3. requires `status: NOERROR` in the reply header AND a non-empty
+#       answer section.
+#
+#  An in-container probe cannot prove that remote peers are allowed to reach
+#  the relay by your tailnet policy; it proves the node is on the tailnet and
+#  that NextDNS resolves through its upstream.
+#
+#  Interface: exit 0 healthy, 1 unhealthy, output optional. Keep it that way
+#  so a future `tailwag-check --quick` can replace this in one Dockerfile line.
+# =============================================================================
+
+set -euo pipefail
+
+# Control domain: stable, public, always has an A record, and not something
+# a NextDNS blocklist targets.
+CONTROL_DOMAIN="example.com"
+
+TS="/usr/local/bin/tailscale"
+SOCKET="/var/run/tailscale/tailscaled.sock"
+
+ip4="$("${TS}" --socket="${SOCKET}" ip -4 2>/dev/null | head -n1 || true)"
+if [[ ! "${ip4}" =~ ^100\. ]]; then
+    echo "unhealthy: no Tailscale 100.x IPv4 (got '${ip4}')"
+    exit 1
+fi
+
+server="${ip4}"
+if [[ "${TS_USERSPACE:-false}" == "true" ]]; then
+    server="127.0.0.1"
+fi
+
+reply="$(dig +noall +comments +answer +time=3 +tries=1 \
+    @"${server}" "${CONTROL_DOMAIN}" A 2>/dev/null || true)"
+
+if [[ "${reply}" != *"status: NOERROR"* ]]; then
+    status="$(grep -o 'status: [A-Z]*' <<<"${reply}" || true)"
+    echo "unhealthy: ${CONTROL_DOMAIN} via ${server}: ${status:-no reply}"
+    exit 1
+fi
+
+# Answer records are the non-empty lines that are not ';' comments.
+while IFS= read -r line; do
+    if [[ -n "${line}" && "${line}" != \;* ]]; then
+        echo "healthy: ${CONTROL_DOMAIN} via ${server}"
+        exit 0
+    fi
+done <<<"${reply}"
+
+echo "unhealthy: ${CONTROL_DOMAIN} via ${server}: NOERROR but empty answer"
+exit 1

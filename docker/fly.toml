@@ -6,6 +6,7 @@
 #  Quick start:
 #    fly launch --no-deploy
 #    fly secrets set TS_AUTHKEY=tskey-client-... NEXTDNS_PROFILE=abc123
+#    (an OAuth client secret also needs TS_EXTRA_ARGS below)
 #    fly deploy
 #
 #  Multi-region (the whole point):
@@ -26,6 +27,9 @@ primary_region = "iad"
   NEXTDNS_CACHE_SIZE = "10MB"
   NEXTDNS_MAX_TTL = "5s"
   NEXTDNS_LISTEN = ":53"
+  # Required with an OAuth client secret (tskey-client-...): the tag must be
+  # in your tailnet policy's tagOwners and granted to the OAuth client.
+  # TS_EXTRA_ARGS = "--advertise-tags=tag:dns-relay"
   # EXIT_NODE = "true"  # Uncomment to advertise as exit node
 
 # Fly.io uses Firecracker microVMs — full kernel networking available.
@@ -42,10 +46,7 @@ primary_region = "iad"
   source = "tailwag_state"
   destination = "/var/lib/tailscale"
 
-# Health check via DNS resolution
-[[services]]
-  protocol = "udp"
-  internal_port = 53
-
-# No public-facing HTTP service needed.
-# All traffic arrives via the Tailscale tunnel.
+# No [[services]] section, deliberately. All DNS traffic arrives over the
+# tailnet. A UDP service on internal_port 53 can be published on Fly's public
+# edge, and with NEXTDNS_LISTEN=":53" that is an open resolver on the
+# internet. Health is checked inside the VM by the image's HEALTHCHECK.

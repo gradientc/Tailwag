@@ -41,7 +41,7 @@
 
 set -euo pipefail
 
-readonly VERSION="0.2.2"
+readonly VERSION="0.3.0"
 
 # --- Tuning ------------------------------------------------------------------
 #

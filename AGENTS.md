@@ -20,7 +20,7 @@ There are two supported delivery mechanisms that share the same principles:
 |------|---------------------------------------|------------------|
 | Add / change a config variable (cache size, TTL, listen addr, etc.) | `docker/rootfs/etc/s6-overlay/scripts/init-config.sh`, `docker/.env.example`, `docker/Dockerfile` (ENV), `docker/docker-compose.yml`, `docker/fly.toml`, and the corresponding section in `tailwag.sh` + its README table | Update both the container *and* host paths; keep defaults consistent |
 | Modify boot / race-condition logic | `tailwag.sh` (systemd drop-in), `docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh`, the s6-rc.d dependency files | You are touching the heart of the project. Re-read the 90-second poll and the `scripts/wait-listen-addrs` boot gate before writing code |
-| Change Tailscale or NextDNS version | `docker/Dockerfile` (the four `ARG` lines + download stages) | Keep the checksum verification pattern for s6 and NextDNS; Tailscale has none |
+| Change Tailscale or NextDNS version | `docker/Dockerfile` (the four `ARG` lines + download stages) | Keep the SHA256 verification pattern for all three downloads: s6 and Tailscale (`.sha256` sidecars), NextDNS (`checksums.txt`) |
 | Add a new shell script | The new file + both duplication locations if applicable + `.github/workflows/shellcheck.yml` `additional_files` | See "Duplication" section below |
 | Improve firewall / exit-node behavior | `docker/Dockerfile` (iptables-legacy symlinks), `docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run` (TS_DEBUG_FIREWALL_MODE) | This is the #1 source of "it works on my machine but not in the container" bugs |
 | Update docs or examples | `README.md`, `docker/README.md`, `.env.example`, `fly.toml` comments | Keep the ASCII diagrams and "Why?" sections in sync |
@@ -51,17 +51,19 @@ There are two supported delivery mechanisms that share the same principles:
     ├── Dockerfile             # 4-stage build, checksums, Alpine 3.24, s6-overlay v3, pinned Tailscale/NextDNS
     ├── docker-compose.yml
     ├── .env.example           # All user-configurable knobs documented here
+    ├── .dockerignore          # Keeps a local .env (TS_AUTHKEY) out of the build context
     ├── fly.toml               # Fly.io deployment (full kernel networking, cheap geo distribution)
     ├── init-config.sh         # DUPLICATE (see below)
     ├── tailscale-up.sh        # DUPLICATE
     ├── run                    # DUPLICATE (the svc-tailscaled run script)
     └── rootfs/                # What actually ends up in the image (COPY rootfs /)
+        ├── usr/local/bin/tailwag-health # HEALTHCHECK: 100.x address + NOERROR with an answer via NextDNS
         └── etc/s6-overlay/
             ├── scripts/           # Real init-config.sh and tailscale-up.sh (authoritative)
             ├── s6-rc.d/
             │   ├── init-config/   # oneshot – validates + writes /etc/nextdns.conf
-            │   ├── svc-tailscaled/ # longrun – the daemon (userspace fallback, firewall mode override)
-            │   ├── tailscale-up/   # oneshot – waits for socket + 100. IP, then `tailscale up`
+            │   ├── svc-tailscaled/ # longrun – the daemon (fatal without /dev/net/tun unless TS_USERSPACE=true, firewall mode override)
+            │   ├── tailscale-up/   # oneshot – waits for socket, bounded `tailscale up --reset`, then polls for a 100. IP
             │   └── svc-nextdns/    # longrun – `nextdns run -config-file /etc/nextdns.conf`
             └── user-bundles.d/user/contents.d/ # declares the startup set
 ```
@@ -93,6 +95,7 @@ shellcheck \
   docker/rootfs/etc/s6-overlay/scripts/init-config.sh \
   docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh \
   docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run \
+  docker/rootfs/usr/local/bin/tailwag-health \
   .agents/setup \
   .agents/resume \
   tests/verify-relay-invariants.sh
@@ -133,7 +136,7 @@ docker compose exec tailwag dig +short @127.0.0.1 example.com
 docker compose exec tailwag cat /etc/nextdns.conf
 ```
 
-Healthcheck is defined in the Dockerfile and uses `dig @127.0.0.1`.
+Healthcheck is defined in the Dockerfile and runs `/usr/local/bin/tailwag-health`: it requires a `100.x` Tailscale IPv4, queries NextDNS on that address (`127.0.0.1` when `TS_USERSPACE=true`) and demands `status: NOERROR` with a non-empty answer. Keep its interface (exit 0/1, output optional) so a future `tailwag-check --quick` can replace it in one line.
 
 Fly.io deployments are fully supported (see `fly.toml` and the docker README).
 
@@ -169,7 +172,10 @@ Fly.io deployments are fully supported (see `fly.toml` and the docker README).
 
 - `init-config` (oneshot) is the only thing allowed to write `/etc/nextdns.conf`.
 - `tailscale-up` (oneshot) **must** complete successfully (with a `100.` IPv4) before `svc-nextdns` is allowed to start. This is expressed both via `dependencies.d/` and the explicit polling loop inside the script.
-- `S6_BEHAVIOUR_IF_STAGE2_FAILS=2` in the Dockerfile means a permanently failing service stops the container so Docker's restart policy can recover it cleanly.
+- `S6_BEHAVIOUR_IF_STAGE2_FAILS=2` in the Dockerfile stops the container when **bring-up** fails (a oneshot exits non-zero), so Docker's restart policy retries cleanly. It does not cover longruns that crash after boot: s6 restarts those in place and the container stays up. Do not document it as more than that.
+- `svc-tailscaled` fails closed: no `/dev/net/tun` and `TS_USERSPACE` not `true` → FATAL, exit 1 → `tailscale-up` gives up after its 30 s socket wait → container stops. Never reintroduce a silent userspace fallback (audit P0).
+- `tailscale-up` runs `tailscale up --reset`, bounded by `timeout 120`. The env is the source of truth for node prefs; `tailscale set` inside the container is reverted on restart. BusyBox `timeout` exits 143 on expiry, not GNU's 124: handle both.
+- An OAuth client secret (`tskey-client-…`) without `--advertise-tags` in `TS_EXTRA_ARGS` is rejected by `tailscale-up` before it contacts the control plane.
 - The `with-contenv` wrapper is how s6 injects the `.env` variables into every service script.
 
 ### Documentation & comments
@@ -184,9 +190,9 @@ Fly.io deployments are fully supported (see `fly.toml` and the docker README).
 - [tailwag.sh:238-388](/tailwag.sh) – the boot gate helper + systemd drop-in that wait for the Tailscale listen addresses (original motivation for the whole project)
 - [scripts/wait-listen-addrs](/scripts/wait-listen-addrs) – the same helper as a lintable file; must stay byte-identical to the `<<'WAIT'` heredoc in `tailwag.sh`
 - [docker/Dockerfile](/docker/Dockerfile) – `iptables-legacy` package + `/usr/sbin` symlinks (Alpine 3.19+; tailscale#17854). Build-time `iptables -V | grep -qi legacy` guard.
-- [docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh:68-88](/docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh) – the post-`tailscale up` 90-second poll for a routable `100.` IP ("the critical fix")
-- [docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run:32-38](/docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run) – "Firewall mode override — the #1 source of container deployment failures"
-- Checksum download pattern in Dockerfile stages 1 and 3 (s6 and NextDNS)
+- [docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh:102-123](/docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh) – the post-`tailscale up` 90-second poll for a routable `100.` IP ("the critical fix")
+- [docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run:46-52](/docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run) – "Firewall mode override — the #1 source of container deployment failures"
+- Checksum download pattern in Dockerfile stages 1–3 (s6, Tailscale, NextDNS)
 
 ---
 
@@ -288,7 +294,7 @@ When you touch any of the four ARG lines, you **must** also update this table an
 
 ## Release & Versioning
 
-- `tailwag.sh` carries its own `readonly VERSION="0.2.2"` constant. `checks.yml` fails a published release whose tag (no `v` prefix, e.g. `0.2.2`) differs from it, so bump `VERSION` in the release PR, not after.
+- `tailwag.sh` carries its own `readonly VERSION="0.3.0"` constant. `checks.yml` fails a published release whose tag (no `v` prefix, e.g. `0.2.2`) differs from it, so bump `VERSION` in the release PR, not after.
 - Docker image versions are controlled by the four `ARG` lines at the top of the Dockerfile.
 - On release, the GitHub Actions workflow tags the image with semver + `latest`.
 - Update the version badges in both README files when cutting a release.

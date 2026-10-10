@@ -145,4 +145,19 @@ need tailwag.sh "ExecStartPre"
 need tailwag.sh "wait-listen-addrs"
 need scripts/wait-listen-addrs "TAILWAG_WAIT_SECS"
 
+# --- Container fail-closed / health / env-as-truth (0.3.0) -------------------
+
+need docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run "FATAL: /dev/net/tun not found"
+if grep -q 'falling back to userspace' docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run; then
+    die "svc-tailscaled silently falls back to userspace again; it must fail closed"
+fi
+need docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh "    --reset"
+# shellcheck disable=SC2016
+need docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh 'timeout "${UP_TIMEOUT}"'
+need docker/Dockerfile 'CMD ["/usr/local/bin/tailwag-health"]'
+need docker/rootfs/usr/local/bin/tailwag-health "status: NOERROR"
+[[ -x docker/rootfs/usr/local/bin/tailwag-health ]] \
+    || die "docker/rootfs/usr/local/bin/tailwag-health is not executable"
+need docker/.dockerignore ".env"
+
 log "all relay invariants hold for pins Alpine=${PINS[ALPINE_VERSION]} s6=${PINS[S6_OVERLAY_VERSION]} tailscale=${PINS[TAILSCALE_VERSION]} nextdns=${PINS[NEXTDNS_VERSION]}"

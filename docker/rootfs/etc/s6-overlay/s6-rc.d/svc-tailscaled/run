@@ -2,8 +2,18 @@
 # shellcheck shell=bash
 # =============================================================================
 #  svc-tailscaled  ·  s6-overlay longrun
-#  Runs the Tailscale daemon. Kernel TUN mode by default; falls back to
-#  userspace if /dev/net/tun is unavailable or TS_USERSPACE=true.
+#  Runs the Tailscale daemon in kernel TUN mode. Userspace networking only
+#  when TS_USERSPACE=true is set explicitly.
+#
+#  Fail closed, never fall back silently (since 0.3.0). The old auto-fallback
+#  to userspace when /dev/net/tun was missing booted "successfully": the
+#  socket and `tailscale ip -4` polls passed, NextDNS started and the
+#  loopback healthcheck went green, while the relay's job (serving tailnet
+#  peers on 100.x:53 and forwarding .ts.net to 100.100.100.100) was not
+#  guaranteed. Now a missing TUN device is FATAL: this script exits 1,
+#  tailscale-up gives up after its 30s socket wait, and
+#  S6_BEHAVIOUR_IF_STAGE2_FAILS=2 stops the container with the FATAL line
+#  in the logs.
 # =============================================================================
 
 exec 2>&1
@@ -18,13 +28,17 @@ ARGS=(
 )
 
 # Userspace networking: no TUN device, no CAP_NET_ADMIN needed, but no exit
-# node capability. Auto-detect if /dev/net/tun is missing.
+# node, no kernel route to 100.100.100.100, and peer delivery to NextDNS goes
+# through tailscaled's netstack. A degraded, explicit opt-in only.
 if [[ "${TS_USERSPACE:-false}" == "true" ]]; then
-    printf '[tailwag] tailscaled: userspace networking (explicit)\n'
+    printf '[tailwag] tailscaled: WARN: userspace networking (TS_USERSPACE=true). Degraded mode: peer reachability on the 100.x address and MagicDNS forwarding (.ts.net -> 100.100.100.100) are not guaranteed.\n'
     ARGS+=(--tun=userspace-networking)
 elif [[ ! -c /dev/net/tun ]]; then
-    printf '[tailwag] tailscaled: /dev/net/tun not found, falling back to userspace\n'
-    ARGS+=(--tun=userspace-networking)
+    printf '[tailwag] tailscaled: FATAL: /dev/net/tun not found. Run the container with --device /dev/net/tun and --cap-add NET_ADMIN (compose: devices + cap_add). TS_USERSPACE=true is an explicit, degraded opt-in for platforms without TUN; it is never chosen automatically.\n'
+    # s6 restarts a longrun about once a second; throttle so the FATAL line is
+    # not repeated 30 times before tailscale-up gives up and stops stage 2.
+    sleep 5
+    exit 1
 else
     printf '[tailwag] tailscaled: kernel TUN mode\n'
 fi

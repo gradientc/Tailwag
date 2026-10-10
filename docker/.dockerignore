@@ -1,0 +1,6 @@
+# Keep local secrets out of the build context. A docker/.env holding
+# TS_AUTHKEY would otherwise be sent to the builder (and any remote builder)
+# on every build, even though the Dockerfile never COPYs it.
+.env
+.env.*
+!.env.example
