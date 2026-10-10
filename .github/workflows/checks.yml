@@ -1,0 +1,46 @@
+name: Checks
+
+# Static relay invariants (tests/verify-relay-invariants.sh): pins vs the
+# AGENTS.md table, checksum steps, MagicDNS / loop-guard / boot-gate text,
+# and byte-identity of every duplicated script. Cheap, so it runs on every
+# push and PR. On a published release it also checks that the tag matches
+# tailwag.sh's VERSION, so a release can never ship a stale version string.
+
+on:
+  push:
+  pull_request:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: read
+
+jobs:
+  invariants:
+    name: Relay invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify relay invariants
+        run: bash tests/verify-relay-invariants.sh
+
+      # Tags in this repo carry no "v" prefix (0.2.0, 0.2.1), so the tag and
+      # VERSION are compared as plain strings. The tag goes through env, not
+      # ${{ }} inside the script, so a crafted tag name cannot inject shell.
+      - name: Tag matches tailwag.sh VERSION
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(sed -n 's/^readonly VERSION="\(.*\)"$/\1/p' tailwag.sh)"
+          if [[ -z "${version}" ]]; then
+            echo "::error file=tailwag.sh::no readonly VERSION=\"...\" line found"
+            exit 1
+          fi
+          if [[ "${version}" != "${TAG}" ]]; then
+            echo "::error file=tailwag.sh::VERSION=${version} but release tag is ${TAG}"
+            exit 1
+          fi
+          echo "tailwag.sh VERSION ${version} matches tag ${TAG}"

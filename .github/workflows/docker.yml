@@ -45,6 +45,12 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # Overlapping pushes to main (or main racing a release) could otherwise
+    # finish out of order and leave :latest on the older build. Queue, never
+    # cancel: a cancelled release publish would leave its semver tags unset.
+    concurrency:
+      group: publish-${{ github.ref }}
+      cancel-in-progress: false
 
     steps:
       - uses: actions/checkout@v7

@@ -6,6 +6,11 @@
 #    - Dockerfile ARG pins match the AGENTS.md "Current pins" table
 #    - s6 / Tailscale / NextDNS checksum verification steps are still present
 #    - MagicDNS forwarder, accept-dns=false default, and 100. wait still exist
+#    - Duplicated scripts are byte-identical to their source of truth
+#    - Both nextdns.conf generators (host + container) share the invariants
+#    - The host loop guard is applied, never asked for
+#
+#  Run by .github/workflows/checks.yml on every push and pull request.
 # =============================================================================
 
 set -euo pipefail
@@ -22,6 +27,15 @@ need() {
     grep -qF -- "${needle}" "${file}" \
         || die "${file} is missing required text: ${needle}"
     log "ok  ${file}: ${needle}"
+}
+
+# Byte-identical pair: copy == source of truth.
+same() {
+    local copy="$1"
+    local source="$2"
+    cmp -s -- "${copy}" "${source}" \
+        || die "${copy} differs from ${source} (edit the source, then mirror it)"
+    log "ok  ${copy} == ${source}"
 }
 
 # --- Pins: Dockerfile ARG is the build source of truth; table must match -----
@@ -55,6 +69,44 @@ need docker/Dockerfile "s6-overlay-noarch.tar.xz.sha256"
 need docker/Dockerfile "\${TS_TGZ}.sha256"
 need docker/Dockerfile "checksums.txt"
 
+# --- Duplicates are identical (AGENTS.md "Duplication reality check") -------
+# Named explicitly, not globbed. docker/run mirrors svc-tailscaled, not
+# svc-nextdns.
+
+same docker/init-config.sh  docker/rootfs/etc/s6-overlay/scripts/init-config.sh
+same docker/tailscale-up.sh docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh
+same docker/run             docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run
+
+# The host boot gate lives in tailwag.sh as a <<'WAIT' heredoc (curl | bash
+# needs a single file) and in scripts/wait-listen-addrs (so ShellCheck sees
+# it). Extract the heredoc body and compare.
+HEREDOC="$(mktemp)"
+trap 'rm -f "${HEREDOC}"' EXIT
+awk '
+    /<<'"'"'WAIT'"'"'$/ { inside = 1; found = 1; next }
+    inside && /^WAIT$/  { inside = 0; next }
+    inside              { print }
+    END                 { exit found ? 0 : 1 }
+' tailwag.sh > "${HEREDOC}" || die "tailwag.sh has no <<'WAIT' heredoc"
+cmp -s -- "${HEREDOC}" scripts/wait-listen-addrs \
+    || die "tailwag.sh WAIT heredoc differs from scripts/wait-listen-addrs (edit both together)"
+log "ok  tailwag.sh <<'WAIT' heredoc == scripts/wait-listen-addrs"
+
+# --- Shared nextdns.conf invariants in both generators -----------------------
+# MagicDNS (.ts.net → 100.100.100.100), no private-range leaks upstream, no
+# system resolver takeover, no mDNS listener on public NICs.
+
+for gen in tailwag.sh docker/rootfs/etc/s6-overlay/scripts/init-config.sh; do
+    for line in \
+        "forwarder ts.net=100.100.100.100" \
+        "discovery-dns 100.100.100.100" \
+        "bogus-priv true" \
+        "auto-activate false" \
+        "mdns disabled"; do
+        need "${gen}" "${line}"
+    done
+done
+
 # --- MagicDNS: .ts.net → 100.100.100.100 in generated NextDNS config ---------
 
 need docker/rootfs/etc/s6-overlay/scripts/init-config.sh "forwarder ts.net=100.100.100.100"
@@ -73,6 +125,16 @@ need docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh '--accept-dns="${TS_AC
 need docker/tailscale-up.sh '--accept-dns="${TS_ACCEPT_DNS:-false}"'
 need tailwag.sh "--accept-dns=false"
 
+# Host loop guard is applied on every run, not offered as a prompt (audit P0).
+need tailwag.sh 'set --accept-dns=false'
+if grep -q 'accept-dns=false" on this server now' tailwag.sh; then
+    die "tailwag.sh asks before applying accept-dns=false; it must apply it"
+fi
+if grep -nE '(^|[^[:alnum:]_])(read|prompt_read)[[:space:]].*accept-dns' tailwag.sh; then
+    die "tailwag.sh reads user input about accept-dns; the loop guard is not optional"
+fi
+log "ok  tailwag.sh applies accept-dns=false without a prompt"
+
 # --- 100. wait on container (poll) and host (pre-check + ExecStartPre) -------
 
 need docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh '^100\.'
@@ -80,5 +142,7 @@ need docker/tailscale-up.sh '^100\.'
 need tailwag.sh '^100\.'
 need tailwag.sh "fd7a:115c"
 need tailwag.sh "ExecStartPre"
+need tailwag.sh "wait-listen-addrs"
+need scripts/wait-listen-addrs "TAILWAG_WAIT_SECS"
 
 log "all relay invariants hold for pins Alpine=${PINS[ALPINE_VERSION]} s6=${PINS[S6_OVERLAY_VERSION]} tailscale=${PINS[TAILSCALE_VERSION]} nextdns=${PINS[NEXTDNS_VERSION]}"

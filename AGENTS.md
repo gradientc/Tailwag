@@ -40,9 +40,12 @@ There are two supported delivery mechanisms that share the same principles:
 ├── tailwag.sh                 # Host installer. Idempotent, strict mode, self-contained for curl|bash
 ├── scripts/
 │   └── wait-listen-addrs      # Host boot gate (ExecStartPre). DUPLICATE of the heredoc inside tailwag.sh
+├── tests/
+│   └── verify-relay-invariants.sh # Static gates: pins, checksums, shared conf lines, duplicate identity, loop guard
 ├── LICENSE, SECURITY.md, README.md
 ├── .github/workflows/
 │   ├── shellcheck.yml         # Enforces ShellCheck on a curated list of scripts (update when adding files)
+│   ├── checks.yml             # Runs tests/verify-relay-invariants.sh; on release, tag must equal tailwag.sh VERSION
 │   └── docker.yml             # Multi-arch build + push to ghcr.io/gradientc/tailwag
 └── docker/
     ├── Dockerfile             # 4-stage build, checksums, Alpine 3.24, s6-overlay v3, pinned Tailscale/NextDNS
@@ -96,6 +99,14 @@ shellcheck \
 ```
 
 If you add a new `.sh` file, add it to the command above. Extensionless scripts must also be listed by **basename** in `.github/workflows/shellcheck.yml` `additional_files` (the action uses `find -name`, so path-valued entries are ignored).
+
+### Mandatory: relay invariants
+
+```bash
+bash tests/verify-relay-invariants.sh
+```
+
+CI runs it on every push and PR (`.github/workflows/checks.yml`). It fails if a duplicated script drifts from its source of truth, if either `nextdns.conf` generator loses a shared invariant line (`forwarder ts.net=…`, `discovery-dns`, `bogus-priv true`, `auto-activate false`, `mdns disabled`), if the host loop guard turns back into a prompt, or if the Dockerfile pins and the table below disagree.
 
 ### Testing the host script
 
@@ -277,7 +288,7 @@ When you touch any of the four ARG lines, you **must** also update this table an
 
 ## Release & Versioning
 
-- `tailwag.sh` carries its own `readonly VERSION="0.2.2"` constant.
+- `tailwag.sh` carries its own `readonly VERSION="0.2.2"` constant. `checks.yml` fails a published release whose tag (no `v` prefix, e.g. `0.2.2`) differs from it, so bump `VERSION` in the release PR, not after.
 - Docker image versions are controlled by the four `ARG` lines at the top of the Dockerfile.
 - On release, the GitHub Actions workflow tags the image with semver + `latest`.
 - Update the version badges in both README files when cutting a release.
