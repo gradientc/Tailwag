@@ -2,6 +2,11 @@ name: ShellCheck
 
 on: [push, pull_request]
 
+# Read-only token: the action only checks out and lints (CodeQL
+# actions/missing-workflow-permissions, CWE-275).
+permissions:
+  contents: read
+
 jobs:
   shellcheck:
     name: ShellCheck
@@ -16,4 +21,4 @@ jobs:
           # so ONLY basenames work (paths like docker/run or .agents/setup do
           # not). Recursive scandir already picks up every *.sh; these cover
           # the extensionless scripts that carry a shell shebang.
-          additional_files: 'setup resume run'
+          additional_files: 'setup resume run wait-listen-addrs tailwag-health'

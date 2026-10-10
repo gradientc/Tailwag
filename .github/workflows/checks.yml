@@ -1,0 +1,79 @@
+name: Checks
+
+# Static relay invariants (tests/verify-relay-invariants.sh): pins vs the
+# AGENTS.md table, checksum steps, MagicDNS / loop-guard / boot-gate text,
+# and byte-identity of every duplicated script. Cheap, so it runs on every
+# push and PR. On a published release it also checks that the tag matches
+# tailwag.sh's VERSION, so a release can never ship a stale version string,
+# then attaches the installer to the release (release-assets below).
+
+on:
+  push:
+  pull_request:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: read
+
+jobs:
+  invariants:
+    name: Relay invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify relay invariants
+        run: bash tests/verify-relay-invariants.sh
+
+      # Tags in this repo carry no "v" prefix (0.2.0, 0.2.1), so the tag and
+      # VERSION are compared as plain strings. The tag goes through env, not
+      # ${{ }} inside the script, so a crafted tag name cannot inject shell.
+      - name: Tag matches tailwag.sh VERSION
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(sed -n 's/^readonly VERSION="\(.*\)"$/\1/p' tailwag.sh)"
+          if [[ -z "${version}" ]]; then
+            echo "::error file=tailwag.sh::no readonly VERSION=\"...\" line found"
+            exit 1
+          fi
+          if [[ "${version}" != "${TAG}" ]]; then
+            echo "::error file=tailwag.sh::VERSION=${version} but release tag is ${TAG}"
+            exit 1
+          fi
+          echo "tailwag.sh VERSION ${version} matches tag ${TAG}"
+
+  # A GitHub release used to produce only a container image; the host
+  # installer was never attached, so the README could only point curl | bash
+  # at the mutable main branch. Every release now carries tailwag.sh, a
+  # SHA256SUMS file and a GitHub artifact attestation for the script:
+  #   gh attestation verify tailwag.sh -R gradientc/Tailwag
+  # Runs only after the invariants and the tag/VERSION gate pass.
+  release-assets:
+    name: Attach tailwag.sh to the release
+    if: github.event_name == 'release'
+    needs: invariants
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write      # upload release assets
+      id-token: write      # artifact attestation (Sigstore OIDC)
+      attestations: write  # artifact attestation (GitHub store)
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Checksums
+        run: sha256sum tailwag.sh > SHA256SUMS
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: tailwag.sh
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release upload "${TAG}" tailwag.sh SHA256SUMS --clobber --repo "${GITHUB_REPOSITORY}"

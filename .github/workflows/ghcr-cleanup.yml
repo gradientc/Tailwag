@@ -1,0 +1,44 @@
+name: GHCR cleanup
+
+# Prunes orphaned versions of ghcr.io/gradientc/tailwag: old untagged indexes
+# left behind when :edge or :latest moved, and the in-registry attestation
+# manifests that builds produced before provenance moved to GitHub artifact
+# attestations.
+#
+# Why a multi-arch aware action and not "delete untagged" in the GHCR UI or
+# actions/delete-package-versions: the linux/amd64 and linux/arm64 manifests of
+# every tagged image are themselves untagged versions. Deleting them breaks
+# `docker pull` of that tag on every architecture. ghcr-cleanup-action walks
+# each tagged index and keeps the manifests it references.
+#
+# Manual only, dry run by default. Read the log of a dry run first.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Only list what would be deleted'
+        type: boolean
+        default: true
+
+permissions:
+  packages: write
+
+concurrency:
+  group: ghcr-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: Prune untagged and orphaned versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dataaxiom/ghcr-cleanup-action@v1.2.2
+        with:
+          package: tailwag
+          delete-untagged: true
+          delete-orphaned-images: true
+          delete-ghost-images: true
+          delete-partial-images: true
+          validate: true
+          dry-run: ${{ inputs.dry-run }}

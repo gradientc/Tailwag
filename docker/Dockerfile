@@ -1,6 +1,8 @@
 # =============================================================================
-#  TAILWAG DOCKER  ·  v0.1.0
+#  TAILWAG DOCKER
 #  A portable, caching NextDNS relay for Tailscale networks.
+#  Component versions are the four ARG pins below; image tags follow the
+#  repository release (see .github/workflows/docker.yml).
 #
 #  Architecture:
 #    Alpine base  →  s6-overlay v3 (PID 1, process supervision)
@@ -107,7 +109,7 @@ LABEL maintainer="Tailwag" \
 #   ip6tables — IPv6 firewall rules (pulled in by iptables)
 #   ca-certificates — TLS verification for DoH upstream and Tailscale coordination
 #   bash      — s6-overlay scripts (minimal Alpine bash, ~1MB)
-#   bind-tools — dig for health checks (optional but worth the ~2MB)
+#   bind-tools — dig for the tailwag-health HEALTHCHECK (~2MB)
 RUN apk add --no-cache \
     iptables \
     ip6tables \
@@ -158,11 +160,14 @@ RUN mkdir -p /var/lib/tailscale /var/run/tailscale /run/nextdns
 #
 # Optional — Tailscale:
 #   TS_HOSTNAME         Node hostname on tailnet (default: tailwag)
-#   TS_EXTRA_ARGS       Extra args for 'tailscale up' (e.g., --advertise-exit-node)
+#   TS_EXTRA_ARGS       Extra args for 'tailscale up' (e.g., --advertise-tags=tag:dns-relay,
+#                       required with an OAuth client secret)
 #   TS_ACCEPT_DNS       Accept DNS from tailnet (default: false — prevents loops)
-#   TS_USERSPACE        Use userspace networking (default: false — kernel mode)
+#   TS_USERSPACE        Userspace networking, explicit degraded opt-in (default:
+#                       false). Without it a missing /dev/net/tun is FATAL.
 #   TS_STATE_DIR        Tailscale state directory (default: /var/lib/tailscale)
-#   TS_DEBUG_FIREWALL_MODE  Firewall mode override (auto/nftables/iptables)
+#   TS_DEBUG_FIREWALL_MODE  Firewall mode override. Leave unset (auto) or set
+#                       iptables; the image forces iptables-legacy (above)
 #
 # Optional — NextDNS:
 #   NEXTDNS_CACHE_SIZE  In-memory cache size (default: 10MB)
@@ -182,15 +187,25 @@ ENV TS_HOSTNAME="tailwag" \
     NEXTDNS_MAX_TTL="5s" \
     NEXTDNS_LISTEN=":53"
 
-# s6-overlay behaviour: stop the container if any service fails permanently
+# s6-overlay behaviour: if bring-up fails (a oneshot such as init-config or
+# tailscale-up exits non-zero), stop the container so Docker's restart policy
+# can retry from a clean start. This covers stage 2 only: a longrun that
+# crashes after boot is restarted in place by s6 and the container keeps
+# running (the HEALTHCHECK below reports it; Docker itself does not restart
+# unhealthy containers).
 ENV S6_BEHAVIOUR_IF_STAGE2_FAILS=2
 
 # Expose DNS port (only reachable via tailnet in practice)
 EXPOSE 53/udp 53/tcp
 
-# Health check: can we resolve through the local relay?
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-    CMD dig +short +time=3 +tries=1 @127.0.0.1 example.com A || exit 1
+# Health check: does the product path work? tailwag-health requires a 100.x
+# Tailscale address, queries NextDNS on it (127.0.0.1 in userspace mode) and
+# demands NOERROR with a non-empty answer. `dig +short ... || exit 1` passed
+# on SERVFAIL, i.e. with the NextDNS upstream broken.
+# start-period covers the worst-case boot: 30s socket wait + 120s bounded
+# `tailscale up` budget + the 100.x poll, with headroom.
+HEALTHCHECK --interval=30s --timeout=8s --start-period=180s --retries=3 \
+    CMD ["/usr/local/bin/tailwag-health"]
 
 # s6-overlay is PID 1
 ENTRYPOINT ["/init"]

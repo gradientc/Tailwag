@@ -19,8 +19,8 @@ There are two supported delivery mechanisms that share the same principles:
 | Goal | Files you will almost certainly touch | Special warnings |
 |------|---------------------------------------|------------------|
 | Add / change a config variable (cache size, TTL, listen addr, etc.) | `docker/rootfs/etc/s6-overlay/scripts/init-config.sh`, `docker/.env.example`, `docker/Dockerfile` (ENV), `docker/docker-compose.yml`, `docker/fly.toml`, and the corresponding section in `tailwag.sh` + its README table | Update both the container *and* host paths; keep defaults consistent |
-| Modify boot / race-condition logic | `tailwag.sh` (systemd drop-in), `docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh`, the s6-rc.d dependency files | You are touching the heart of the project. Re-read the 90-second poll and the ExecStartPre loop before writing code |
-| Change Tailscale or NextDNS version | `docker/Dockerfile` (the four `ARG` lines + download stages) | Keep the checksum verification pattern for s6 and NextDNS; Tailscale has none |
+| Modify boot / race-condition logic | `tailwag.sh` (systemd drop-in), `docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh`, the s6-rc.d dependency files | You are touching the heart of the project. Re-read the 90-second poll and the `scripts/wait-listen-addrs` boot gate before writing code |
+| Change Tailscale or NextDNS version | `docker/Dockerfile` (the four `ARG` lines + download stages) | Keep the SHA256 verification pattern for all three downloads: s6 and Tailscale (`.sha256` sidecars), NextDNS (`checksums.txt`) |
 | Add a new shell script | The new file + both duplication locations if applicable + `.github/workflows/shellcheck.yml` `additional_files` | See "Duplication" section below |
 | Improve firewall / exit-node behavior | `docker/Dockerfile` (iptables-legacy symlinks), `docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run` (TS_DEBUG_FIREWALL_MODE) | This is the #1 source of "it works on my machine but not in the container" bugs |
 | Update docs or examples | `README.md`, `docker/README.md`, `.env.example`, `fly.toml` comments | Keep the ASCII diagrams and "Why?" sections in sync |
@@ -38,25 +38,33 @@ There are two supported delivery mechanisms that share the same principles:
 ```
 .
 ├── tailwag.sh                 # Host installer. Idempotent, strict mode, self-contained for curl|bash
+├── scripts/
+│   └── wait-listen-addrs      # Host boot gate (ExecStartPre). DUPLICATE of the heredoc inside tailwag.sh
+├── tests/
+│   └── verify-relay-invariants.sh # Static gates: pins, checksums, shared conf lines, duplicate identity, loop guard
 ├── LICENSE, SECURITY.md, README.md
 ├── .github/workflows/
 │   ├── shellcheck.yml         # Enforces ShellCheck on a curated list of scripts (update when adding files)
-│   └── docker.yml             # Multi-arch build + push to ghcr.io/gradientc/tailwag
+│   ├── checks.yml             # Runs tests/verify-relay-invariants.sh; on release, tag must equal tailwag.sh VERSION
+│   ├── docker.yml             # Multi-arch build; publishes :edge (main, image paths only) and semver + :latest (releases)
+│   └── ghcr-cleanup.yml       # Manual, dry-run-by-default pruning of orphaned GHCR versions (multi-arch aware)
 └── docker/
     ├── Dockerfile             # 4-stage build, checksums, Alpine 3.24, s6-overlay v3, pinned Tailscale/NextDNS
     ├── docker-compose.yml
     ├── .env.example           # All user-configurable knobs documented here
+    ├── .dockerignore          # Keeps a local .env (TS_AUTHKEY) out of the build context
     ├── fly.toml               # Fly.io deployment (full kernel networking, cheap geo distribution)
     ├── init-config.sh         # DUPLICATE (see below)
     ├── tailscale-up.sh        # DUPLICATE
     ├── run                    # DUPLICATE (the svc-tailscaled run script)
     └── rootfs/                # What actually ends up in the image (COPY rootfs /)
+        ├── usr/local/bin/tailwag-health # HEALTHCHECK: 100.x address + NOERROR with an answer via NextDNS
         └── etc/s6-overlay/
             ├── scripts/           # Real init-config.sh and tailscale-up.sh (authoritative)
             ├── s6-rc.d/
             │   ├── init-config/   # oneshot – validates + writes /etc/nextdns.conf
-            │   ├── svc-tailscaled/ # longrun – the daemon (userspace fallback, firewall mode override)
-            │   ├── tailscale-up/   # oneshot – waits for socket + 100. IP, then `tailscale up`
+            │   ├── svc-tailscaled/ # longrun – the daemon (fatal without /dev/net/tun unless TS_USERSPACE=true, firewall mode override)
+            │   ├── tailscale-up/   # oneshot – waits for socket, bounded `tailscale up --reset`, then polls for a 100. IP
             │   └── svc-nextdns/    # longrun – `nextdns run -config-file /etc/nextdns.conf`
             └── user-bundles.d/user/contents.d/ # declares the startup set
 ```
@@ -65,6 +73,8 @@ There are two supported delivery mechanisms that share the same principles:
 
 **Duplication reality check**  
 `docker/{init-config.sh,tailscale-up.sh,run}` are currently byte-identical copies of files under `rootfs/`. The top-level copies are not packaged into the image; only `rootfs/` is.  
+
+`scripts/wait-listen-addrs` is the same kind of duplicate on the host side: `tailwag.sh` must stay self-contained for `curl | bash`, so it carries the helper as a `<<'WAIT'` heredoc and writes it to `/usr/local/libexec/tailwag/`. The committed file exists so ShellCheck can lint it. Edit both together.
 
 **Rule for agents:** When editing, make the change in the `rootfs/...` location first. Then mirror it to the top-level copy so the two stay in sync. If you are adding a brand-new script, place the source of truth under `rootfs/`, update the s6-rc.d files that reference it, and decide whether a convenience copy at `docker/` level is still needed.
 
@@ -78,6 +88,7 @@ There are two supported delivery mechanisms that share the same principles:
 # From repo root – canonical list of every managed shell script
 shellcheck \
   tailwag.sh \
+  scripts/wait-listen-addrs \
   docker/run \
   docker/init-config.sh \
   docker/tailscale-up.sh \
@@ -85,12 +96,21 @@ shellcheck \
   docker/rootfs/etc/s6-overlay/scripts/init-config.sh \
   docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh \
   docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run \
+  docker/rootfs/usr/local/bin/tailwag-health \
   .agents/setup \
   .agents/resume \
   tests/verify-relay-invariants.sh
 ```
 
 If you add a new `.sh` file, add it to the command above. Extensionless scripts must also be listed by **basename** in `.github/workflows/shellcheck.yml` `additional_files` (the action uses `find -name`, so path-valued entries are ignored).
+
+### Mandatory: relay invariants
+
+```bash
+bash tests/verify-relay-invariants.sh
+```
+
+CI runs it on every push and PR (`.github/workflows/checks.yml`). It fails if a duplicated script drifts from its source of truth, if either `nextdns.conf` generator loses a shared invariant line (`forwarder ts.net=…`, `discovery-dns`, `bogus-priv true`, `auto-activate false`, `mdns disabled`), if the host loop guard turns back into a prompt, or if the Dockerfile pins and the table below disagree.
 
 ### Testing the host script
 
@@ -117,7 +137,7 @@ docker compose exec tailwag dig +short @127.0.0.1 example.com
 docker compose exec tailwag cat /etc/nextdns.conf
 ```
 
-Healthcheck is defined in the Dockerfile and uses `dig @127.0.0.1`.
+Healthcheck is defined in the Dockerfile and runs `/usr/local/bin/tailwag-health`: it requires a `100.x` Tailscale IPv4, queries NextDNS on that address (`127.0.0.1` when `TS_USERSPACE=true`) and demands `status: NOERROR` with a non-empty answer. Keep its interface (exit 0/1, output optional) so a future `tailwag-check --quick` can replace it in one line.
 
 Fly.io deployments are fully supported (see `fly.toml` and the docker README).
 
@@ -153,7 +173,10 @@ Fly.io deployments are fully supported (see `fly.toml` and the docker README).
 
 - `init-config` (oneshot) is the only thing allowed to write `/etc/nextdns.conf`.
 - `tailscale-up` (oneshot) **must** complete successfully (with a `100.` IPv4) before `svc-nextdns` is allowed to start. This is expressed both via `dependencies.d/` and the explicit polling loop inside the script.
-- `S6_BEHAVIOUR_IF_STAGE2_FAILS=2` in the Dockerfile means a permanently failing service stops the container so Docker's restart policy can recover it cleanly.
+- `S6_BEHAVIOUR_IF_STAGE2_FAILS=2` in the Dockerfile stops the container when **bring-up** fails (a oneshot exits non-zero), so Docker's restart policy retries cleanly. It does not cover longruns that crash after boot: s6 restarts those in place and the container stays up. Do not document it as more than that.
+- `svc-tailscaled` fails closed: no `/dev/net/tun` and `TS_USERSPACE` not `true` → FATAL, exit 1 → `tailscale-up` gives up after its 30 s socket wait → container stops. Never reintroduce a silent userspace fallback (audit P0).
+- `tailscale-up` runs `tailscale up --reset`, bounded by `timeout 120`. The env is the source of truth for node prefs; `tailscale set` inside the container is reverted on restart. BusyBox `timeout` exits 143 on expiry, not GNU's 124: handle both.
+- An OAuth client secret (`tskey-client-…`) without `--advertise-tags` in `TS_EXTRA_ARGS` is rejected by `tailscale-up` before it contacts the control plane.
 - The `with-contenv` wrapper is how s6 injects the `.env` variables into every service script.
 
 ### Documentation & comments
@@ -164,12 +187,13 @@ Fly.io deployments are fully supported (see `fly.toml` and the docker README).
 
 **High-signal locations whose style and logic you should internalize**
 
-- [tailwag.sh:55-57](/tailwag.sh) – host log/die helpers + timestamp
-- [tailwag.sh:164-203](/tailwag.sh) – the systemd drop-in that waits for the Tailscale address (original motivation for the whole project)
+- [tailwag.sh:66-68](/tailwag.sh) – host log/die helpers + timestamp
+- [tailwag.sh:238-388](/tailwag.sh) – the boot gate helper + systemd drop-in that wait for the Tailscale listen addresses (original motivation for the whole project)
+- [scripts/wait-listen-addrs](/scripts/wait-listen-addrs) – the same helper as a lintable file; must stay byte-identical to the `<<'WAIT'` heredoc in `tailwag.sh`
 - [docker/Dockerfile](/docker/Dockerfile) – `iptables-legacy` package + `/usr/sbin` symlinks (Alpine 3.19+; tailscale#17854). Build-time `iptables -V | grep -qi legacy` guard.
-- [docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh:68-88](/docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh) – the post-`tailscale up` 90-second poll for a routable `100.` IP ("the critical fix")
-- [docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run:32-38](/docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run) – "Firewall mode override — the #1 source of container deployment failures"
-- Checksum download pattern in Dockerfile stages 1 and 3 (s6 and NextDNS)
+- [docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh:102-123](/docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh) – the post-`tailscale up` 90-second poll for a routable `100.` IP ("the critical fix")
+- [docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run:46-52](/docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run) – "Firewall mode override — the #1 source of container deployment failures"
+- Checksum download pattern in Dockerfile stages 1–3 (s6, Tailscale, NextDNS)
 
 ---
 
@@ -177,7 +201,7 @@ Fly.io deployments are fully supported (see `fly.toml` and the docker README).
 
 1. **Tailscale IP readiness**
    - The container version waits in `tailscale-up.sh` after `tailscale up` returns.
-   - The host version uses a systemd `ExecStartPre` loop in the drop-in.
+   - The host version uses a systemd `ExecStartPre=/usr/local/libexec/tailwag/wait-listen-addrs` gate in the drop-in. It waits until **every** `listen` address in `/etc/nextdns.conf` is on the Tailscale interface (exact match, IPv4 and IPv6, 120 s deadline, `TimeoutStartSec=150` above it). The config is the single source of truth; never bake an address into the drop-in again.
    - Both poll for an address matching `^100\.` (IPv4) or the `fd7a:115c:...` prefix (IPv6).
 
 2. **iptables backend compatibility**
@@ -190,7 +214,7 @@ Fly.io deployments are fully supported (see `fly.toml` and the docker README).
    - `/var/lib/tailscale` (volume in compose, fly.toml mount, or host) must survive restarts. Without it every container launch creates a brand-new Tailscale node.
 
 5. **DNS loop prevention**
-   - `TS_ACCEPT_DNS=false` (env) / `--accept-dns=false` (host script prompt) is not optional for relay nodes.
+   - `TS_ACCEPT_DNS=false` (env) / `tailscale set --accept-dns=false` (host script, applied automatically on every run) is not optional for relay nodes. The only host opt-out is `TAILWAG_KEEP_ACCEPT_DNS=1`; never turn it back into a prompt.
 
 ---
 
@@ -229,6 +253,8 @@ The container image (the only thing that ships to production) is built from four
 - `docker/metadata-action@v6.2.0`
 - `docker/build-push-action@v7`
 - `ludeeus/action-shellcheck@2.0.0`
+- `actions/attest-build-provenance@v4`
+- `dataaxiom/ghcr-cleanup-action@v1.2.2`
 
 These are kept on recent tags. **Dependabot + the 2-day cooldown** (see below) will open PRs for them after the aging period.
 
@@ -244,7 +270,7 @@ This is the mechanism behind the "wait 48 h before merging Dependa PRs" advice y
 
 **Policy for this repo**
 
-- Automated parts (the 7 Actions): Dependabot will propose updates only after the 2-day cooldown. Review + merge normally.
+- Automated parts (the 9 Actions): Dependabot will propose updates only after the 2-day cooldown. Review + merge normally.
 - Manual parts (the 4 ARGs): humans must still wait **≥2 days after the upstream release date** before merging any version bump, even if a colleague or Dependabot (for other reasons) opens a PR early.
 - The recent Tailscale publish-lag incident is the canonical example of why the extra human check is required.
 
@@ -271,9 +297,11 @@ When you touch any of the four ARG lines, you **must** also update this table an
 
 ## Release & Versioning
 
-- `tailwag.sh` carries its own `VERSION="0.2.0"` constant.
-- Docker image versions are controlled by the four `ARG` lines at the top of the Dockerfile.
-- On release, the GitHub Actions workflow tags the image with semver + `latest`.
+- `tailwag.sh` carries its own `readonly VERSION="0.3.0"` constant. `checks.yml` fails a published release whose tag (no `v` prefix, e.g. `0.2.2`) differs from it, so bump `VERSION` in the release PR, not after.
+- On release, `checks.yml` attaches `tailwag.sh`, `SHA256SUMS` and an artifact attestation to the GitHub release. The README install commands use `releases/latest/download/`, so a release without these assets breaks them.
+- Docker image component versions are controlled by the four `ARG` lines at the top of the Dockerfile.
+- Image tags (`docker.yml`): a full release gets `X.Y.Z`, `X.Y` and `latest`; a prerelease gets `X.Y.Z` and `X.Y` only; the bare major tag starts at 1.0. A push to `main` that touches `docker/**` (Markdown excluded) or the workflow publishes `edge`; nothing else on `main` publishes. Provenance is a GitHub artifact attestation (`provenance: false` in BuildKit), so GHCR does not fill up with `unknown/unknown` attestation manifests.
+- Never delete untagged GHCR versions by hand: the per-platform manifests of every tagged image are untagged. Use `ghcr-cleanup.yml` (dry run first).
 - Update the version badges in both README files when cutting a release.
 
 ---

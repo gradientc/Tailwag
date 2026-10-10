@@ -1,17 +1,63 @@
 name: Docker
 
+# Image publishing policy for ghcr.io/gradientc/tailwag
+#
+#   Event                    Tags pushed                 Notes
+#   -----------------------  --------------------------  -----------------------
+#   release (published)      0.3.0, 0.3, latest          latest only for a full
+#                                                        release, never a
+#                                                        prerelease. The bare
+#                                                        major tag (:1) is added
+#                                                        once we reach 1.0: a
+#                                                        floating :0 promises a
+#                                                        compatibility that 0.x
+#                                                        semver does not.
+#   push to main, image      edge                        Only when files that
+#   inputs changed                                       end up in the image (or
+#                                                        this workflow) change.
+#   pull request, same       nothing (build only)        amd64 + arm64, no push.
+#   paths
+#
+# Why the paths filter: every push to main used to publish a full multi-arch
+# image, docs-only commits included. Each publish leaves an index, two platform
+# manifests and two attestation manifests in GHCR, and the previous index goes
+# untagged the moment :latest moves. Three chore commits in six minutes meant
+# fifteen package versions for zero image changes.
+#
+# Why provenance: false + attest-build-provenance: BuildKit's in-registry
+# provenance shows up in GHCR as extra "unknown/unknown" untagged versions on
+# every build. GitHub artifact attestations keep the same SLSA provenance in
+# GitHub's attestation store instead, verifiable with
+#   gh attestation verify oci://ghcr.io/gradientc/tailwag:<tag> -R gradientc/Tailwag
+#
+# Untagged platform manifests (linux/amd64, linux/arm64) are NOT garbage: a
+# tagged multi-arch index points at them. Never bulk-delete untagged versions
+# from the GHCR UI; use the multi-arch aware ghcr-cleanup.yml workflow.
+
 on:
   push:
     branches:
       - main
+    paths:
+      - 'docker/**'
+      - '!docker/**/*.md'
+      - '.github/workflows/docker.yml'
   pull_request:
+    paths:
+      - 'docker/**'
+      - '!docker/**/*.md'
+      - '.github/workflows/docker.yml'
   release:
     types:
       - published
 
+# Least-privilege default; build-and-push widens it for its own job only.
+permissions:
+  contents: read
+
 jobs:
   # PR-only: multi-arch build without push so arm64 regressions surface before
-  # merge. The publish job below still owns GHCR tags on main/release.
+  # merge. The publish job below owns GHCR tags on main/release.
   build:
     name: Build multi-arch image (no push)
     if: github.event_name == 'pull_request'
@@ -35,6 +81,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: false
           load: false
+          provenance: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -45,6 +92,14 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write      # artifact attestation (Sigstore OIDC)
+      attestations: write  # artifact attestation (GitHub store)
+    # Overlapping pushes to main (or main racing a release) could otherwise
+    # finish out of order and leave a tag on the older build. Queue, never
+    # cancel: a cancelled release publish would leave its semver tags unset.
+    concurrency:
+      group: publish-${{ github.ref }}
+      cancel-in-progress: false
 
     steps:
       - uses: actions/checkout@v7
@@ -62,26 +117,37 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Tags here have no "v" prefix (0.2.1); type=semver parses them as is.
       - name: Extract image metadata (tags & labels)
         id: meta
         uses: docker/metadata-action@v6.2.0
         with:
           images: ghcr.io/gradientc/tailwag
+          flavor: |
+            latest=false
           tags: |
-            # On release: tag with semver (e.g. v0.0.3 → :0, :0.0, :0.0.3)
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            # On push to main: tag as :latest
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref_name, '0.') }}
+            type=raw,value=latest,enable=${{ github.event_name == 'release' && !github.event.release.prerelease }}
+            type=edge,branch=main
 
       - name: Build and push
+        id: push
         uses: docker/build-push-action@v7
         with:
           context: ./docker
           platforms: linux/amd64,linux/arm64
           push: true
+          provenance: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/gradientc/tailwag
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: false
