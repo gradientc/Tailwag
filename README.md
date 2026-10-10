@@ -31,7 +31,7 @@ The problem: getting NextDNS to **bind only to your Tailscale address**, **survi
 | **Cache** | Enables a 20 MB in-memory cache with a 5 s client TTL for fast config propagation |
 | **Boot fix** | Installs a systemd drop-in so NextDNS waits for Tailscale before starting |
 | **Firewall** | Opens port 53 on `tailscale0` via UFW (if active) |
-| **Loop prevention** | Prompts to run `tailscale set --accept-dns=false` on the relay itself |
+| **Loop prevention** | Runs `tailscale set --accept-dns=false` on the relay itself, on every run (other node settings untouched) |
 
 Every run produces the same configuration state. Safe to re-run.
 
@@ -80,7 +80,26 @@ Defaults are set for home and small-office tailnets. Edit the variables at the t
 | --- | --- | --- |
 | `CACHE_SIZE` | `20MB` | In-memory DNS cache size |
 | `MAX_TTL` | `5s` | Max TTL served to clients — low value means NextDNS config changes propagate fast |
-| `ENABLE_IPV6` | `true` | Bind to Tailscale's IPv6 address as well |
+| `ENABLE_IPV6` | `true` | Bind to Tailscale's IPv6 address as well (skipped automatically if the address is not on `tailscale0`, e.g. IPv6 disabled in the kernel) |
+
+One environment variable changes behaviour at run time:
+
+| Variable | Effect |
+| --- | --- |
+| `TAILWAG_KEEP_ACCEPT_DNS=1` | Skip the `accept-dns=false` loop guard (prints a warning with the manual command). Only for nodes that are not used as nameservers. |
+
+```bash
+sudo TAILWAG_KEEP_ACCEPT_DNS=1 ./tailwag.sh abc123
+```
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Installed and healthy |
+| `1` | Not installed (fatal error before or during setup) |
+| `2` | Usage error (no profile ID and no terminal to prompt on, or invalid profile ID) |
+| `3` | Installed, but needs attention: the loop guard could not be applied, or the post-install DNS probe failed. NextDNS is running; read the `WARN` lines. |
 
 ## Useful commands
 
@@ -104,7 +123,7 @@ journalctl -u nextdns -f    # Follow service logs
 1. Tailscale clients send DNS queries to the relay's Tailscale IP.
 2. NextDNS CLI resolves upstream via DoH, applies your NextDNS profile (ad-blocking, security, allowlists).
 3. Responses are cached locally; subsequent queries for the same domain are served instantly.
-4. The systemd drop-in ensures the relay survives reboots by waiting for Tailscale to be ready.
+4. The systemd drop-in ensures the relay survives reboots: a pre-start helper (`/usr/local/libexec/tailwag/wait-listen-addrs`) blocks until every listen address in `/etc/nextdns.conf` is on `tailscale0`, for up to 120 s.
 
 ## FAQ
 

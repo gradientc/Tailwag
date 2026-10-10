@@ -19,7 +19,7 @@ There are two supported delivery mechanisms that share the same principles:
 | Goal | Files you will almost certainly touch | Special warnings |
 |------|---------------------------------------|------------------|
 | Add / change a config variable (cache size, TTL, listen addr, etc.) | `docker/rootfs/etc/s6-overlay/scripts/init-config.sh`, `docker/.env.example`, `docker/Dockerfile` (ENV), `docker/docker-compose.yml`, `docker/fly.toml`, and the corresponding section in `tailwag.sh` + its README table | Update both the container *and* host paths; keep defaults consistent |
-| Modify boot / race-condition logic | `tailwag.sh` (systemd drop-in), `docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh`, the s6-rc.d dependency files | You are touching the heart of the project. Re-read the 90-second poll and the ExecStartPre loop before writing code |
+| Modify boot / race-condition logic | `tailwag.sh` (systemd drop-in), `docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh`, the s6-rc.d dependency files | You are touching the heart of the project. Re-read the 90-second poll and the `scripts/wait-listen-addrs` boot gate before writing code |
 | Change Tailscale or NextDNS version | `docker/Dockerfile` (the four `ARG` lines + download stages) | Keep the checksum verification pattern for s6 and NextDNS; Tailscale has none |
 | Add a new shell script | The new file + both duplication locations if applicable + `.github/workflows/shellcheck.yml` `additional_files` | See "Duplication" section below |
 | Improve firewall / exit-node behavior | `docker/Dockerfile` (iptables-legacy symlinks), `docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run` (TS_DEBUG_FIREWALL_MODE) | This is the #1 source of "it works on my machine but not in the container" bugs |
@@ -38,6 +38,8 @@ There are two supported delivery mechanisms that share the same principles:
 ```
 .
 ├── tailwag.sh                 # Host installer. Idempotent, strict mode, self-contained for curl|bash
+├── scripts/
+│   └── wait-listen-addrs      # Host boot gate (ExecStartPre). DUPLICATE of the heredoc inside tailwag.sh
 ├── LICENSE, SECURITY.md, README.md
 ├── .github/workflows/
 │   ├── shellcheck.yml         # Enforces ShellCheck on a curated list of scripts (update when adding files)
@@ -66,6 +68,8 @@ There are two supported delivery mechanisms that share the same principles:
 **Duplication reality check**  
 `docker/{init-config.sh,tailscale-up.sh,run}` are currently byte-identical copies of files under `rootfs/`. The top-level copies are not packaged into the image; only `rootfs/` is.  
 
+`scripts/wait-listen-addrs` is the same kind of duplicate on the host side: `tailwag.sh` must stay self-contained for `curl | bash`, so it carries the helper as a `<<'WAIT'` heredoc and writes it to `/usr/local/libexec/tailwag/`. The committed file exists so ShellCheck can lint it. Edit both together.
+
 **Rule for agents:** When editing, make the change in the `rootfs/...` location first. Then mirror it to the top-level copy so the two stay in sync. If you are adding a brand-new script, place the source of truth under `rootfs/`, update the s6-rc.d files that reference it, and decide whether a convenience copy at `docker/` level is still needed.
 
 ---
@@ -78,6 +82,7 @@ There are two supported delivery mechanisms that share the same principles:
 # From repo root – canonical list of every managed shell script
 shellcheck \
   tailwag.sh \
+  scripts/wait-listen-addrs \
   docker/run \
   docker/init-config.sh \
   docker/tailscale-up.sh \
@@ -164,8 +169,9 @@ Fly.io deployments are fully supported (see `fly.toml` and the docker README).
 
 **High-signal locations whose style and logic you should internalize**
 
-- [tailwag.sh:55-57](/tailwag.sh) – host log/die helpers + timestamp
-- [tailwag.sh:164-203](/tailwag.sh) – the systemd drop-in that waits for the Tailscale address (original motivation for the whole project)
+- [tailwag.sh:66-68](/tailwag.sh) – host log/die helpers + timestamp
+- [tailwag.sh:238-388](/tailwag.sh) – the boot gate helper + systemd drop-in that wait for the Tailscale listen addresses (original motivation for the whole project)
+- [scripts/wait-listen-addrs](/scripts/wait-listen-addrs) – the same helper as a lintable file; must stay byte-identical to the `<<'WAIT'` heredoc in `tailwag.sh`
 - [docker/Dockerfile](/docker/Dockerfile) – `iptables-legacy` package + `/usr/sbin` symlinks (Alpine 3.19+; tailscale#17854). Build-time `iptables -V | grep -qi legacy` guard.
 - [docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh:68-88](/docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh) – the post-`tailscale up` 90-second poll for a routable `100.` IP ("the critical fix")
 - [docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run:32-38](/docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run) – "Firewall mode override — the #1 source of container deployment failures"
@@ -177,7 +183,7 @@ Fly.io deployments are fully supported (see `fly.toml` and the docker README).
 
 1. **Tailscale IP readiness**
    - The container version waits in `tailscale-up.sh` after `tailscale up` returns.
-   - The host version uses a systemd `ExecStartPre` loop in the drop-in.
+   - The host version uses a systemd `ExecStartPre=/usr/local/libexec/tailwag/wait-listen-addrs` gate in the drop-in. It waits until **every** `listen` address in `/etc/nextdns.conf` is on the Tailscale interface (exact match, IPv4 and IPv6, 120 s deadline, `TimeoutStartSec=150` above it). The config is the single source of truth; never bake an address into the drop-in again.
    - Both poll for an address matching `^100\.` (IPv4) or the `fd7a:115c:...` prefix (IPv6).
 
 2. **iptables backend compatibility**
@@ -190,7 +196,7 @@ Fly.io deployments are fully supported (see `fly.toml` and the docker README).
    - `/var/lib/tailscale` (volume in compose, fly.toml mount, or host) must survive restarts. Without it every container launch creates a brand-new Tailscale node.
 
 5. **DNS loop prevention**
-   - `TS_ACCEPT_DNS=false` (env) / `--accept-dns=false` (host script prompt) is not optional for relay nodes.
+   - `TS_ACCEPT_DNS=false` (env) / `tailscale set --accept-dns=false` (host script, applied automatically on every run) is not optional for relay nodes. The only host opt-out is `TAILWAG_KEEP_ACCEPT_DNS=1`; never turn it back into a prompt.
 
 ---
 
@@ -271,7 +277,7 @@ When you touch any of the four ARG lines, you **must** also update this table an
 
 ## Release & Versioning
 
-- `tailwag.sh` carries its own `VERSION="0.2.0"` constant.
+- `tailwag.sh` carries its own `readonly VERSION="0.2.2"` constant.
 - Docker image versions are controlled by the four `ARG` lines at the top of the Dockerfile.
 - On release, the GitHub Actions workflow tags the image with semver + `latest`.
 - Update the version badges in both README files when cutting a release.

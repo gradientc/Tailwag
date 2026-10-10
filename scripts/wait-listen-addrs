@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# ==============================================================================
+#  wait-listen-addrs  ·  Tailwag host boot gate (systemd ExecStartPre)
+# ==============================================================================
+#
+#  Installed by tailwag.sh to /usr/local/libexec/tailwag/wait-listen-addrs and
+#  run as ExecStartPre= of nextdns.service. Blocks until every specific
+#  `listen` address in /etc/nextdns.conf is assigned to the Tailscale
+#  interface, so nextdns never tries to bind() an address that is not there
+#  yet (the boot race the whole project exists to fix).
+#
+#  Why a helper and not the old inline `for i in $(seq 1 90)` loop:
+#    - 90 x (sleep 1 + ip/grep) overran systemd's default 90s
+#      TimeoutStartSec, so systemd killed the loop before its own
+#      "timed out" message could print. This uses a $SECONDS deadline that
+#      sits below the drop-in's TimeoutStartSec=150.
+#    - `grep -q 100.64.1.2` also matched 100.64.1.23. Matching here is exact
+#      string equality on `ip -o addr` field 4 with the prefix length removed.
+#    - Only IPv4 was awaited although an IPv6 listen line was written. Every
+#      listen address is awaited now, IPv4 and IPv6 alike.
+#    - The drop-in baked in the install-time IPv4 separately from the
+#      config. The config is now the single source of truth.
+#
+#  Usage:   wait-listen-addrs [interface]      (default: tailscale0)
+#  Env:     TAILWAG_WAIT_SECS   deadline in seconds (default 120). If you
+#                               raise it, raise TimeoutStartSec in the
+#                               drop-in too, or systemd kills us first.
+#           TAILWAG_CONF        config to read (default /etc/nextdns.conf)
+#  Exit:    0 all addresses present (or none to wait for), 1 timed out.
+#
+#  Wildcard (`:53`, `0.0.0.0`, `[::]`) and loopback listeners are skipped:
+#  they never live on the Tailscale interface.
+#
+# ==============================================================================
+
+set -euo pipefail
+
+IFACE="${1:-tailscale0}"
+CONF="${TAILWAG_CONF:-/etc/nextdns.conf}"
+WAIT_SECS="${TAILWAG_WAIT_SECS:-120}"
+
+die() { printf 'Tailwag: %s\n' "$*" >&2; exit 1; }
+
+[[ "$WAIT_SECS" =~ ^[0-9]+$ ]] || die "TAILWAG_WAIT_SECS must be an integer (got '$WAIT_SECS')"
+
+if [[ ! -r "$CONF" ]]; then
+    printf 'Tailwag: %s not readable; nothing to wait for\n' "$CONF" >&2
+    exit 0
+fi
+
+# --- Collect the specific listen addresses -----------------------------------
+# nextdns syntax is `listen HOST:PORT`, with IPv6 hosts in brackets.
+
+ADDRS=()
+while read -r key value _; do
+    [[ "$key" == "listen" && -n "${value:-}" ]] || continue
+    if [[ "$value" == \[* ]]; then
+        addr="${value#\[}"
+        addr="${addr%%\]*}"
+    else
+        addr="${value%:*}"
+    fi
+    case "$addr" in
+        ""|0.0.0.0|::|127.*|::1) continue ;;
+    esac
+    ADDRS+=("${addr,,}")
+done < "$CONF"
+
+[[ ${#ADDRS[@]} -gt 0 ]] || exit 0
+
+# --- Wait until each one is on the interface ---------------------------------
+
+on_iface() {
+    local want="$1" _idx _dev _fam cidr _rest
+    while read -r _idx _dev _fam cidr _rest; do
+        [[ "${cidr%/*}" == "$want" ]] && return 0
+    done < <(ip -o addr show dev "$IFACE" 2>/dev/null || true)
+    return 1
+}
+
+deadline=$(( SECONDS + WAIT_SECS ))
+while :; do
+    missing=""
+    for addr in "${ADDRS[@]}"; do
+        if ! on_iface "$addr"; then
+            missing="$addr"
+            break
+        fi
+    done
+    [[ -z "$missing" ]] && exit 0
+
+    if (( SECONDS >= deadline )); then
+        printf 'Tailwag: timed out after %ss waiting for %s on %s\n' \
+            "$WAIT_SECS" "$missing" "$IFACE" >&2
+        exit 1
+    fi
+    sleep 1
+done
