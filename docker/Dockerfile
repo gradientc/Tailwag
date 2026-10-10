@@ -110,7 +110,15 @@ LABEL maintainer="Tailwag" \
 #   ca-certificates — TLS verification for DoH upstream and Tailscale coordination
 #   bash      — s6-overlay scripts (minimal Alpine bash, ~1MB)
 #   bind-tools — dig for the tailwag-health HEALTHCHECK (~2MB)
-RUN apk add --no-cache \
+#
+# `apk upgrade` first: `apk add` only touches the packages named below (and
+# what they newly need), so musl, busybox, libcrypto/libssl and the rest of
+# the alpine base image would stay at whatever version the base image tag was
+# built with. Upgrading them at build time picks up Alpine security fixes that
+# landed after that base image. Combined with the weekly no-cache rebuild in
+# .github/workflows/docker.yml, :latest does not sit on stale libc / openssl.
+RUN apk upgrade --no-cache \
+    && apk add --no-cache \
     iptables \
     ip6tables \
     iptables-legacy \

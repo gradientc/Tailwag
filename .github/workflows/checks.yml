@@ -22,7 +22,7 @@ jobs:
     name: Relay invariants
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Verify relay invariants
         run: bash tests/verify-relay-invariants.sh
@@ -62,13 +62,13 @@ jobs:
       id-token: write      # artifact attestation (Sigstore OIDC)
       attestations: write  # artifact attestation (GitHub store)
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Checksums
         run: sha256sum tailwag.sh > SHA256SUMS
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-path: tailwag.sh
 
