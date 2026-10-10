@@ -18,7 +18,9 @@
 #
 #  `tailscale up` itself is bounded (120s). Unbounded, a stuck control plane
 #  left this oneshot unfinished forever: NextDNS never started and stage 2
-#  never failed, so Docker's restart policy never got a chance.
+#  never failed, so Docker's restart policy never got a chance. The timeout is
+#  recognised by elapsed time, not by exit code (see "Authenticate" below):
+#  the tailscale CLI traps the SIGTERM that BusyBox `timeout` sends and exits 1.
 # =============================================================================
 
 set -euo pipefail
@@ -88,16 +90,25 @@ log "Running tailscale up (timeout ${UP_TIMEOUT}s)..."
 # form avoids "unbound variable" under `set -u` if the array were ever empty
 # (it is not today — we always push --socket/up/--reset/--accept-dns/...).
 #
-# Exit status on timeout: GNU timeout returns 124, but the BusyBox applet in
-# this Alpine image execs the command and lets SIGTERM kill it, so the shell
-# sees 143 (128 + SIGTERM). Treat both as a timeout.
+# Detecting the timeout. Do NOT rely on the exit code. Measured in the shipped
+# image: BusyBox `timeout` sends SIGTERM at the deadline, but the tailscale CLI
+# catches it, prints "context canceled" and exits 1 after exactly 120.0 s. (GNU
+# timeout would give 124 and an unhandled SIGTERM would give 143, so those two
+# are still accepted.) Matching only 124/143 meant the helpful message below was
+# never printed and users saw just "tailscale up failed (exit 1)" after two
+# silent minutes, with no hint that the control plane was unreachable or an
+# interactive login was pending. So: a non-zero exit after running for at least
+# UP_TIMEOUT seconds is a timeout, whatever the code. ${SECONDS} is bash's own
+# seconds counter, immune to wall-clock jumps from NTP.
 UP_RC=0
+UP_START=${SECONDS}
 timeout "${UP_TIMEOUT}" "${TS}" ${UP_ARGS[@]+"${UP_ARGS[@]}"} || UP_RC=$?
-case "${UP_RC}" in
-    0)       ;;
-    124|143) die "tailscale up did not finish within ${UP_TIMEOUT}s (control plane unreachable, or waiting for interactive login?). Check TS_AUTHKEY and outbound HTTPS to the Tailscale control server." ;;
-    *)       die "tailscale up failed (exit ${UP_RC}). See the tailscale error above." ;;
-esac
+if (( UP_RC != 0 )); then
+    if (( UP_RC == 124 || UP_RC == 143 || SECONDS - UP_START >= UP_TIMEOUT )); then
+        die "tailscale up did not finish within ${UP_TIMEOUT}s (control plane unreachable, or waiting for interactive login?). Check TS_AUTHKEY and outbound HTTPS to the Tailscale control server."
+    fi
+    die "tailscale up failed (exit ${UP_RC}). See the tailscale error above."
+fi
 
 # --- Wait for a routable Tailscale IP ----------------------------------------
 # This is the critical fix from the original Tailwag: the tunnel needs time
