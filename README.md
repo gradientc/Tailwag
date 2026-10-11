@@ -113,9 +113,20 @@ sudo TAILWAG_KEEP_ACCEPT_DNS=1 ./tailwag.sh abc123
 ```bash
 nextdns status              # Relay health check
 nextdns log                 # Live query log (Ctrl-C to stop)
+nextdns cache-stats         # Cache hit / miss counters since the last restart
 cat /etc/nextdns.conf       # View current configuration
 journalctl -u nextdns -f    # Follow service logs
 ```
+
+### Cache metrics
+
+The host config enables `cache-metrics true`, so the relay keeps Ristretto's counters as well as the plain hit/miss pair. `nextdns cache-stats` shows the hit/miss pair. The richer counters (evictions, bytes added and evicted) are only exposed on NextDNS's control socket; NextDNS 1.47 has no CLI subcommand for them, so read them with one JSON line:
+
+```bash
+sudo python3 -c 'import socket;s=socket.socket(socket.AF_UNIX);s.connect("/var/run/nextdns.sock");s.sendall(b"{\"name\":\"cache-metrics\"}\n");print(s.recv(4096).decode())'
+```
+
+Hit ratio is `hit / (hit + miss)`. If `keys_evicted` is still 0 after a day of traffic, `CACHE_SIZE` is large enough and raising it changes nothing; if it keeps climbing, the working set is bigger than the cap. Counters reset when nextdns restarts.
 
 ## How it works
 

@@ -125,6 +125,10 @@ need docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh '--accept-dns="${TS_AC
 need docker/tailscale-up.sh '--accept-dns="${TS_ACCEPT_DNS:-false}"'
 need tailwag.sh "--accept-dns=false"
 
+# Host-only observability: the cache cap is sized from evidence, so the host
+# generator must keep cache-metrics on (the container has no reader for it).
+need tailwag.sh "cache-metrics true"
+
 # Host loop guard is applied on every run, not offered as a prompt (audit P0).
 need tailwag.sh 'set --accept-dns=false'
 if grep -q 'accept-dns=false" on this server now' tailwag.sh; then

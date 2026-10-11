@@ -227,6 +227,12 @@ fi
 
 log "Writing /etc/nextdns.conf ..."
 
+# cache-metrics: keeps Ristretto hit/miss/eviction counters so the cache cap can
+# be sized from evidence (`nextdns cache-stats`, and the control-socket call in
+# the README for keys_evicted). NextDNS documents the overhead as "small CPU
+# and memory". Host only: the container has no python or socket-capable nc to
+# read the richer counters, so it is not worth the overhead there.
+
 systemctl stop nextdns 2>/dev/null || true
 
 {
@@ -243,6 +249,7 @@ mdns disabled
 auto-activate false
 bogus-priv true
 use-hosts true
+cache-metrics true
 STATIC
 } > /etc/nextdns.conf
 
@@ -540,6 +547,7 @@ $( [[ -n "$TS_IPV6" ]] && printf '    IPv6  %s\n' "$TS_IPV6" )
   ---------------
   nextdns status                Check relay health
   nextdns log                   Live query log (Ctrl-C to stop)
+  nextdns cache-stats           Cache hit / miss counters
   cat /etc/nextdns.conf         View configuration
   journalctl -u nextdns -f      Follow service logs
 
