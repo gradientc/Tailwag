@@ -32,7 +32,7 @@ Self-hosting the NextDNS CLI (instead of using Tailscale's built-in NextDNS inte
 | **tailscaled** | WireGuard tunnel — kernel TUN mode; userspace only as an explicit, degraded opt-in |
 | **NextDNS CLI** | DNS53-to-DoH proxy with in-memory LRU cache |
 
-Total footprint: ~80 MB image, ~60 MB RAM at runtime with a 10 MB cache.
+Total footprint: ~80 MB image, ~60 MB RAM at runtime with the cache empty; the 20 MB cache cap is filled only by entries actually cached.
 
 ## Quick start
 
@@ -130,7 +130,7 @@ The environment is the source of truth for the node's Tailscale preferences: `ta
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `NEXTDNS_CACHE_SIZE` | `10MB` | In-memory cache (2-4 MB for constrained devices) |
+| `NEXTDNS_CACHE_SIZE` | `20MB` | In-memory cache cap; memory is used only by cached entries, ~60-120k responses at 20 MB (2-4 MB for constrained devices) |
 | `NEXTDNS_MAX_TTL` | `30s` | Max TTL handed to clients; bounds how long a client keeps an answer after a profile change (the relay cache is flushed by NextDNS on every profile update) |
 | `NEXTDNS_LISTEN` | `:53` | Bind address for DNS queries (the health check queries this host and port) |
 
@@ -279,7 +279,7 @@ No. The NextDNS config includes `forwarder ts.net=100.100.100.100`, so `.ts.net`
 The 5-second `MAX_TTL` default means clients pick up changes almost immediately. No container restart needed.
 
 **How much RAM does it use?**
-~60 MB with a 10 MB cache. Should run comfortably in 128 MB. For extremely constrained environments, set `NEXTDNS_CACHE_SIZE=2MB`.
+~60 MB with the cache empty, up to ~80 MB with the 20 MB cache full. Should run comfortably in 128 MB. For extremely constrained environments, set `NEXTDNS_CACHE_SIZE=2MB`.
 
 **Can I use this without the exit node feature?**
 Yes. The exit node is entirely opt-in via `EXIT_NODE=true`. Without it, the container still needs `CAP_NET_ADMIN` and the TUN device: the relay itself runs in kernel TUN mode.

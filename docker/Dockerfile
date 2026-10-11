@@ -178,7 +178,8 @@ RUN mkdir -p /var/lib/tailscale /var/run/tailscale /run/nextdns
 #                       iptables; the image forces iptables-legacy (above)
 #
 # Optional — NextDNS:
-#   NEXTDNS_CACHE_SIZE  In-memory cache size (default: 10MB)
+#   NEXTDNS_CACHE_SIZE  In-memory cache cap (default: 20MB; memory is used only
+#                       by entries actually cached, ~60-120k responses at 20MB)
 #   NEXTDNS_MAX_TTL     Max TTL handed to clients (default: 30s). Caps only
 #                       client TTLs; the relay cache keeps the true TTL and is
 #                       flushed by NextDNS whenever the profile changes
@@ -193,7 +194,7 @@ ENV TS_HOSTNAME="tailwag" \
     TS_ACCEPT_DNS="false" \
     TS_USERSPACE="false" \
     TS_STATE_DIR="/var/lib/tailscale" \
-    NEXTDNS_CACHE_SIZE="10MB" \
+    NEXTDNS_CACHE_SIZE="20MB" \
     NEXTDNS_MAX_TTL="30s" \
     NEXTDNS_LISTEN=":53"
 

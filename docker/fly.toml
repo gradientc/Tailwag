@@ -24,7 +24,7 @@ primary_region = "iad"
   TS_HOSTNAME = "tailwag"
   TS_ACCEPT_DNS = "false"
   TS_USERSPACE = "false"
-  NEXTDNS_CACHE_SIZE = "10MB"
+  NEXTDNS_CACHE_SIZE = "20MB"
   NEXTDNS_MAX_TTL = "30s"
   NEXTDNS_LISTEN = ":53"
   # Required with an OAuth client secret (tskey-client-...): the tag must be

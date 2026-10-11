@@ -48,9 +48,14 @@ readonly VERSION="0.3.0"
 # These defaults are good for home/small-office tailnets. Adjust if you know
 # what you're doing; the comments explain the trade-offs.
 
-# In-memory cache. 10 MB holds tens of thousands of records, enough for any
-# home or small-office tailnet. Same default as the container image.
-CACHE_SIZE="10MB"
+# In-memory cache cap. NextDNS charges each entry its response size in bytes
+# (typically 100-300 B) and uses memory only for entries actually cached, so a
+# generous cap costs nothing on a quiet relay. 20 MB holds roughly 60-120k
+# responses: the whole working set of a small office, so the hit rate is
+# bounded by TTL expiry, never by eviction. Same default as the container.
+# Check with `nextdns cache-stats` (hit/miss) and the cache-metrics socket
+# call documented in the README (keys_evicted should stay 0).
+CACHE_SIZE="20MB"
 
 # Max TTL handed to clients. This caps only the TTL in the answers sent to
 # clients. The relay's own cache keeps the true upstream TTL, and NextDNS

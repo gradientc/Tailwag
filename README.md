@@ -28,7 +28,7 @@ The problem: getting NextDNS to **bind only to your Tailscale address**, **survi
 | --- | --- |
 | **Install** | Adds the official NextDNS apt repo and installs the CLI |
 | **Configure** | Binds NextDNS to your Tailscale IPv4 (and IPv6) addresses only |
-| **Cache** | Enables a 10 MB in-memory cache with a 30 s client TTL; the relay cache is flushed on every profile change |
+| **Cache** | Enables a 20 MB in-memory cache with a 30 s client TTL; the relay cache is flushed on every profile change |
 | **Boot fix** | Installs a systemd drop-in so NextDNS waits for Tailscale before starting |
 | **Firewall** | Opens port 53 on `tailscale0` via UFW (if active) |
 | **Loop prevention** | Runs `tailscale set --accept-dns=false` on the relay itself, on every run (other node settings untouched) |
@@ -85,7 +85,7 @@ Defaults are set for home and small-office tailnets. Edit the variables at the t
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `CACHE_SIZE` | `10MB` | In-memory DNS cache size (same default as the container) |
+| `CACHE_SIZE` | `20MB` | In-memory DNS cache cap (same default as the container). Memory is used only by cached entries; 20 MB holds roughly 60-120k responses |
 | `MAX_TTL` | `30s` | Max TTL handed to clients. Bounds how long a client keeps an answer after a profile change; the relay cache itself is flushed by NextDNS on every profile update |
 | `ENABLE_IPV6` | `true` | Bind to Tailscale's IPv6 address as well (skipped automatically if the address is not on `tailscale0`, e.g. IPv6 disabled in the kernel) |
 
