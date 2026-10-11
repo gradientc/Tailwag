@@ -137,7 +137,7 @@ docker compose exec tailwag dig +short @127.0.0.1 example.com
 docker compose exec tailwag cat /etc/nextdns.conf
 ```
 
-Healthcheck is defined in the Dockerfile and runs `/usr/local/bin/tailwag-health`: it requires a `100.x` Tailscale IPv4, queries NextDNS on that address (`127.0.0.1` when `TS_USERSPACE=true`) and demands `status: NOERROR` with a non-empty answer. Keep its interface (exit 0/1, output optional) so a future `tailwag-check --quick` can replace it in one line.
+Healthcheck is defined in the Dockerfile and runs `/usr/local/bin/tailwag-health`: it requires a `100.x` Tailscale IPv4, queries NextDNS where it listens (the first `listen` line of `/etc/nextdns.conf`, i.e. `NEXTDNS_LISTEN`, with the port passed to `dig -p`; a wildcard host such as `:53` is probed on the `100.x` address, or `127.0.0.1` when `TS_USERSPACE=true`) and demands `status: NOERROR` with a non-empty answer. Keep its interface (exit 0/1, output optional) so a future `tailwag-check --quick` can replace it in one line.
 
 Fly.io deployments are fully supported (see `fly.toml` and the docker README).
 
@@ -174,8 +174,8 @@ Fly.io deployments are fully supported (see `fly.toml` and the docker README).
 - `init-config` (oneshot) is the only thing allowed to write `/etc/nextdns.conf`.
 - `tailscale-up` (oneshot) **must** complete successfully (with a `100.` IPv4) before `svc-nextdns` is allowed to start. This is expressed both via `dependencies.d/` and the explicit polling loop inside the script.
 - `S6_BEHAVIOUR_IF_STAGE2_FAILS=2` in the Dockerfile stops the container when **bring-up** fails (a oneshot exits non-zero), so Docker's restart policy retries cleanly. It does not cover longruns that crash after boot: s6 restarts those in place and the container stays up. Do not document it as more than that.
-- `svc-tailscaled` fails closed: no `/dev/net/tun` and `TS_USERSPACE` not `true` → FATAL, exit 1 → `tailscale-up` gives up after its 30 s socket wait → container stops. Never reintroduce a silent userspace fallback (audit P0).
-- `tailscale-up` runs `tailscale up --reset`, bounded by `timeout 120`. The env is the source of truth for node prefs; `tailscale set` inside the container is reverted on restart. BusyBox `timeout` exits 143 on expiry, not GNU's 124: handle both.
+- `svc-tailscaled` fails closed: no `/dev/net/tun`, or a TUN device without `CAP_NET_ADMIN` (bit 12 of `CapEff` in `/proc/self/status`), and `TS_USERSPACE` not `true` → FATAL, `sleep 5`, exit 1 → `tailscale-up` gives up after its 30 s socket wait → container stops. The capability check exists because tailscaled otherwise crash-loops under s6 (`tstun.New("tailscale0"): operation not permitted`, measured 15 restarts and 1201 log lines in 33 s) and buries the cause. Never reintroduce a silent userspace fallback (audit P0).
+- `tailscale-up` runs `tailscale up --reset`, bounded by `timeout 120`. The env is the source of truth for node prefs; `tailscale set` inside the container is reverted on restart. Detect the timeout by elapsed time, not exit code: measured in the image, the tailscale CLI catches BusyBox `timeout`'s SIGTERM, prints `context canceled` and exits **1** after 120.0 s (GNU would give 124, an unhandled SIGTERM 143). `tailscale-up` treats a non-zero exit after `UP_TIMEOUT` seconds, or 124/143, as the "did not finish within 120s" failure and anything else as "tailscale up failed (exit N)".
 - An OAuth client secret (`tskey-client-…`) without `--advertise-tags` in `TS_EXTRA_ARGS` is rejected by `tailscale-up` before it contacts the control plane.
 - The `with-contenv` wrapper is how s6 injects the `.env` variables into every service script.
 
@@ -244,19 +244,19 @@ The container image (the only thing that ships to production) is built from four
 | `TAILSCALE_VERSION`   | 1.102.5    | 1.104.1 (2026-10-07) / 1.102.5 (2026-09-29) | **Deliberately held on the 1.102.x line.** 1.102.4 → 1.102.5 fixes tailscaled exiting when a client falls behind on status updates (it now reconnects). 1.104.1 was skipped: only 3 days old at query time, rebuilt on Go 1.27, and has an open Linux regression where TLS-inspecting middleboxes reset control-plane HTTPS because the ClientHello now offers ML-KEM (tailscale#21708 — node comes up logged out), plus a direct-path recovery regression (tailscale#21728). Re-evaluate 1.104.x once those are fixed. pkgs.tailscale.com amd64/arm64 `.tgz` + `.tgz.sha256` HTTP 200. **Known publish-lag risk** (see commit 7ddcec9 history). Image still forces `/usr/sbin/iptables` → legacy (tailscale#17854). **Safe**. |
 | `NEXTDNS_VERSION`     | 1.47.3     | 1.47.3 (2026-06-03)        | Already at latest non-prerelease. Go 1.26.4 + x/net bump + OpenWrt DHCP CIDR strip. Full `checksums.txt` lists linux_amd64 and linux_arm64 tarballs. **Safe**. |
 
-**GitHub Actions** (pins in `.github/workflows/`):
+**GitHub Actions** (pins in `.github/workflows/`). The real pins are full 40-character commit SHAs, written as `uses: owner/repo@<sha> # <version>`; the versions below are what those SHAs resolved to on 2026-10-11:
 
-- `actions/checkout@v7`
-- `docker/setup-qemu-action@v4`
-- `docker/setup-buildx-action@v4`
-- `docker/login-action@v4.6.0`
-- `docker/metadata-action@v6.2.0`
-- `docker/build-push-action@v7`
-- `ludeeus/action-shellcheck@2.0.0`
-- `actions/attest-build-provenance@v4`
-- `dataaxiom/ghcr-cleanup-action@v1.2.2`
+- `actions/checkout` v7
+- `docker/setup-qemu-action` v4
+- `docker/setup-buildx-action` v4
+- `docker/login-action` v4.6.0
+- `docker/metadata-action` v6.2.0
+- `docker/build-push-action` v7
+- `ludeeus/action-shellcheck` 2.0.0
+- `actions/attest-build-provenance` v4
+- `dataaxiom/ghcr-cleanup-action` v1.2.2
 
-These are kept on recent tags. **Dependabot + the 2-day cooldown** (see below) will open PRs for them after the aging period.
+A tag like `@v4` is mutable: whoever controls the action repo can re-point it at malicious code that runs with this repo's token (the tj-actions/changed-files incident, March 2025). A SHA cannot be re-pointed. Never replace a SHA with a tag; when adding an action, resolve the tag to its commit SHA and keep the `# version` comment. **Dependabot + the 2-day cooldown** (see below) will open PRs for them after the aging period and update the SHA and the comment together.
 
 **The 2-day supply-chain cooldown (the feature you asked about)**
 
@@ -270,7 +270,7 @@ This is the mechanism behind the "wait 48 h before merging Dependa PRs" advice y
 
 **Policy for this repo**
 
-- Automated parts (the 9 Actions): Dependabot will propose updates only after the 2-day cooldown. Review + merge normally.
+- Automated parts (the 9 Actions, pinned by commit SHA): Dependabot will propose updates only after the 2-day cooldown. Review + merge normally; check that the PR keeps the SHA pin and the `# version` comment.
 - Manual parts (the 4 ARGs): humans must still wait **≥2 days after the upstream release date** before merging any version bump, even if a colleague or Dependabot (for other reasons) opens a PR early.
 - The recent Tailscale publish-lag incident is the canonical example of why the extra human check is required.
 
@@ -300,7 +300,7 @@ When you touch any of the four ARG lines, you **must** also update this table an
 - `tailwag.sh` carries its own `readonly VERSION="0.3.0"` constant. `checks.yml` fails a published release whose tag (no `v` prefix, e.g. `0.2.2`) differs from it, so bump `VERSION` in the release PR, not after.
 - On release, `checks.yml` attaches `tailwag.sh`, `SHA256SUMS` and an artifact attestation to the GitHub release. The README install commands use `releases/latest/download/`, so a release without these assets breaks them.
 - Docker image component versions are controlled by the four `ARG` lines at the top of the Dockerfile.
-- Image tags (`docker.yml`): a full release gets `X.Y.Z`, `X.Y` and `latest`; a prerelease gets `X.Y.Z` and `X.Y` only; the bare major tag starts at 1.0. A push to `main` that touches `docker/**` (Markdown excluded) or the workflow publishes `edge`; nothing else on `main` publishes. Provenance is a GitHub artifact attestation (`provenance: false` in BuildKit), so GHCR does not fill up with `unknown/unknown` attestation manifests.
+- Image tags (`docker.yml`): a full release gets `X.Y.Z`, `X.Y` and `latest`; a prerelease gets `X.Y.Z` and `X.Y` only; the bare major tag starts at 1.0. A push to `main` that touches `docker/**` (Markdown excluded) or the workflow publishes `edge`; nothing else on `main` publishes. A weekly scheduled run (and `workflow_dispatch`) rebuilds the newest full release tag with no cache and re-pushes its semver tags and `latest`, so the image picks up Alpine security updates (`apk upgrade` in the Dockerfile) without waiting for a release; it builds the release tag's own Dockerfile, so the `apk upgrade` only takes effect for releases cut after it was added. All publish jobs share one `publish` concurrency group. Provenance is a GitHub artifact attestation (`provenance: false` in BuildKit), so GHCR does not fill up with `unknown/unknown` attestation manifests.
 - Never delete untagged GHCR versions by hand: the per-platform manifests of every tagged image are untagged. Use `ghcr-cleanup.yml` (dry run first).
 - Update the version badges in both README files when cutting a release.
 

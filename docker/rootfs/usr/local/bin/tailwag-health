@@ -12,10 +12,21 @@
 #
 #  This check:
 #    1. requires `tailscale ip -4` to return a 100.x address;
-#    2. queries the control domain against that address (kernel TUN mode),
-#       or 127.0.0.1 when TS_USERSPACE=true (no kernel interface to query);
+#    2. queries the control domain where NextDNS actually listens: the first
+#       `listen` line of /etc/nextdns.conf (NEXTDNS_LISTEN), see below;
 #    3. requires `status: NOERROR` in the reply header AND a non-empty
 #       answer section.
+#
+#  Following NEXTDNS_LISTEN. The check used to hard-code <100.x>:53. With
+#  NEXTDNS_LISTEN=127.0.0.1:53 or :5353 NextDNS served correctly, but nothing
+#  answered on <100.x>:53, so the container was permanently `unhealthy`. The
+#  `listen` line is `HOST:PORT` (IPv6 hosts in brackets, e.g. [fd7a::1]:53):
+#    - wildcard HOST (empty, 0.0.0.0, ::): NextDNS answers on every address,
+#      so query the 100.x address (kernel TUN mode) or 127.0.0.1 when
+#      TS_USERSPACE=true (no kernel interface to query), as before;
+#    - a specific HOST: query exactly that address;
+#    - PORT defaults to 53 and is passed to dig with -p.
+#  No /etc/nextdns.conf (init-config has not run) falls back to <100.x>:53.
 #
 #  An in-container probe cannot prove that remote peers are allowed to reach
 #  the relay by your tailnet policy; it proves the node is on the tailnet and
@@ -33,6 +44,7 @@ CONTROL_DOMAIN="example.com"
 
 TS="/usr/local/bin/tailscale"
 SOCKET="/var/run/tailscale/tailscaled.sock"
+NEXTDNS_CONF="/etc/nextdns.conf"
 
 ip4="$("${TS}" --socket="${SOCKET}" ip -4 2>/dev/null | head -n1 || true)"
 if [[ ! "${ip4}" =~ ^100\. ]]; then
@@ -40,27 +52,68 @@ if [[ ! "${ip4}" =~ ^100\. ]]; then
     exit 1
 fi
 
-server="${ip4}"
+# Where would a wildcard listener be probed? The tailnet address, or loopback
+# in userspace mode.
+default_server="${ip4}"
 if [[ "${TS_USERSPACE:-false}" == "true" ]]; then
-    server="127.0.0.1"
+    default_server="127.0.0.1"
+fi
+
+# First `listen` line of the generated config, if the file exists.
+listen=""
+if [[ -r "${NEXTDNS_CONF}" ]]; then
+    listen="$(awk '$1 == "listen" {print $2; exit}' "${NEXTDNS_CONF}" 2>/dev/null || true)"
+fi
+
+# Split HOST:PORT. Bracketed IPv6 ([fd7a::1]:5353, [::]:53) is split at "]:".
+# Otherwise a single colon separates host and port (":5353", "0.0.0.0:53");
+# no colon means port 53, and two or more colons without brackets is a bare
+# IPv6 literal, which keeps port 53 rather than mistaking a hextet for a port.
+host="${listen}"
+port="53"
+if [[ "${listen}" == \[*\]:* ]]; then
+    host="${listen%\]:*}]"
+    port="${listen##*\]:}"
+elif [[ "${listen}" == *:* && "${listen}" != *:*:* ]]; then
+    host="${listen%%:*}"
+    port="${listen##*:}"
+fi
+[[ "${port}" =~ ^[0-9]+$ ]] || port="53"
+host="${host#\[}"
+host="${host%\]}"
+
+server="${host}"
+case "${host}" in
+    ""|"0.0.0.0"|"::") server="${default_server}" ;;
+esac
+
+# Label for messages: host, plus :port only when it is not the default. An
+# IPv6 host is bracketed there, or "fd7a::1:5353" would be unreadable.
+target="${server}"
+if [[ "${port}" != "53" ]]; then
+    if [[ "${server}" == *:* ]]; then
+        target="[${server}]:${port}"
+    else
+        target="${server}:${port}"
+    fi
 fi
 
 reply="$(dig +noall +comments +answer +time=3 +tries=1 \
-    @"${server}" "${CONTROL_DOMAIN}" A 2>/dev/null || true)"
+    -p "${port}" @"${server}" "${CONTROL_DOMAIN}" A 2>/dev/null || true)"
 
 if [[ "${reply}" != *"status: NOERROR"* ]]; then
     status="$(grep -o 'status: [A-Z]*' <<<"${reply}" || true)"
-    echo "unhealthy: ${CONTROL_DOMAIN} via ${server}: ${status:-no reply}"
+    echo "unhealthy: ${CONTROL_DOMAIN} via ${target}: ${status:-no reply}"
     exit 1
 fi
 
 # Answer records are the non-empty lines that are not ';' comments.
 while IFS= read -r line; do
     if [[ -n "${line}" && "${line}" != \;* ]]; then
-        echo "healthy: ${CONTROL_DOMAIN} via ${server}"
+        echo "healthy: ${CONTROL_DOMAIN} via ${target}"
         exit 0
     fi
 done <<<"${reply}"
 
-echo "unhealthy: ${CONTROL_DOMAIN} via ${server}: NOERROR but empty answer"
+echo "unhealthy: ${CONTROL_DOMAIN} via ${target}: NOERROR but empty answer"
 exit 1

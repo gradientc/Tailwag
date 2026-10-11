@@ -14,6 +14,15 @@
 #  tailscale-up gives up after its 30s socket wait, and
 #  S6_BEHAVIOUR_IF_STAGE2_FAILS=2 stops the container with the FATAL line
 #  in the logs.
+#
+#  The same applies to a TUN device without CAP_NET_ADMIN. Measured: with
+#  `--device /dev/net/tun` but no `--cap-add NET_ADMIN`, tailscaled starts,
+#  fails `tstun.New("tailscale0"): operation not permitted` and exits; s6
+#  restarts it about every 2s. In the 33s before tailscale-up gave up that was
+#  15 restarts and 1201 log lines, with the real cause buried under 180
+#  iptables "needs to be upgraded" lines. The effective capability set is
+#  readable up front (CapEff in /proc/self/status), so check bit 12
+#  (CAP_NET_ADMIN) here and fail once, with the fix, instead.
 # =============================================================================
 
 exec 2>&1
@@ -40,6 +49,20 @@ elif [[ ! -c /dev/net/tun ]]; then
     sleep 5
     exit 1
 else
+    # /dev/net/tun existing is not enough: creating tailscale0 needs
+    # CAP_NET_ADMIN (capability 12) in the effective set. Without it tailscaled
+    # crash-loops under s6 and buries the cause (see header). CapEff is a hex
+    # bitmask; bash arithmetic handles the 64-bit value. If /proc/self/status
+    # is unreadable or has no CapEff line, skip the check and let tailscaled
+    # try: this is a guard against a known failure, not a new way to fail.
+    capeff="$(awk '/^CapEff:/ {print $2}' /proc/self/status 2>/dev/null || true)"
+    if [[ "${capeff}" =~ ^[0-9a-fA-F]+$ ]] && (( ! (16#${capeff} & (1 << 12)) )); then
+        printf '[tailwag] tailscaled: FATAL: CAP_NET_ADMIN is not in the effective capability set. /dev/net/tun exists but tailscaled cannot create the tailscale0 interface. Run with --cap-add NET_ADMIN (compose: cap_add: [NET_ADMIN, NET_RAW]). TS_USERSPACE=true is the explicit, degraded opt-in for platforms that cannot grant it.\n'
+        # Same throttle as the TUN check above: without it s6 restarts this
+        # script about once a second and repeats the FATAL line.
+        sleep 5
+        exit 1
+    fi
     printf '[tailwag] tailscaled: kernel TUN mode\n'
 fi
 

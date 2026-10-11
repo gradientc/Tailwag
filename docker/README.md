@@ -32,7 +32,7 @@ Self-hosting the NextDNS CLI (instead of using Tailscale's built-in NextDNS inte
 | **tailscaled** | WireGuard tunnel — kernel TUN mode; userspace only as an explicit, degraded opt-in |
 | **NextDNS CLI** | DNS53-to-DoH proxy with in-memory LRU cache |
 
-Total footprint: ~80 MB image, ~60 MB RAM at runtime with a 10 MB cache.
+Total footprint: ~80 MB image, ~60 MB RAM at runtime with the cache empty; the 20 MB cache cap is filled only by entries actually cached.
 
 ## Quick start
 
@@ -59,6 +59,8 @@ docker run -d \
 | `:0.3` | Newest patch release of 0.3 |
 | `:latest` | Newest full release (never a prerelease) |
 | `:edge` | Tip of `main`, rebuilt only when the image's inputs change. For testing |
+
+`:latest` and the newest release's version tags are rebuilt from the release tag every Monday with no cache, so they pick up newly published Alpine package updates without a new release. Tailscale, NextDNS and s6-overlay stay at the versions pinned in that release. Pull again, or pin a digest if you need a byte-for-byte reproducible image.
 
 There is no floating `:0` tag: 0.x releases make no compatibility promise across minors. A stale `:0` from 0.2.1 may still exist in the registry; do not use it. Verify an image's origin with `gh attestation verify oci://ghcr.io/gradientc/tailwag:0.3.0 -R gradientc/Tailwag`.
 
@@ -95,9 +97,9 @@ Then, in the [Tailscale admin console](https://login.tailscale.com/admin/dns):
 
 | Change | What you see | What to do |
 | --- | --- | --- |
-| **No silent userspace fallback** (breaking) | Without `/dev/net/tun` the container logs `tailscaled: FATAL: /dev/net/tun not found` and stops, instead of starting in userspace mode | Pass `--device /dev/net/tun --cap-add NET_ADMIN` (the compose file already does). Only on platforms with no TUN device, set `TS_USERSPACE=true` explicitly and accept the [degraded mode](#restricted-platforms) |
+| **No silent userspace fallback** (breaking) | Without `/dev/net/tun`, or with the device but without `CAP_NET_ADMIN`, the container logs `tailscaled: FATAL: /dev/net/tun not found` (or `FATAL: CAP_NET_ADMIN is not in the effective capability set`) and stops, instead of starting in userspace mode or crash-looping `tailscaled` | Pass `--device /dev/net/tun --cap-add NET_ADMIN` (the compose file already does). Only on platforms with no TUN device, set `TS_USERSPACE=true` explicitly and accept the [degraded mode](#restricted-platforms) |
 | **`tailscale up --reset` on every start** | Changing `EXIT_NODE`, `SUBNET_ROUTES` or `TS_EXTRA_ARGS` between restarts now works (it used to stop the container with "requires mentioning all non-default flags") | Treat the env as the source of truth. Preferences changed with `tailscale set` inside the container are reverted on restart |
-| **Health check tests the relay path** | `unhealthy` when the node has no `100.x` address or NextDNS cannot resolve upstream (SERVFAIL, REFUSED, empty answer), not only when nothing answers on loopback | Nothing, unless you relied on the old always-green check. `start-period` is now 180 s |
+| **Health check tests the relay path** | `unhealthy` when the node has no `100.x` address or NextDNS cannot resolve upstream (SERVFAIL, REFUSED, empty answer), not only when nothing answers on loopback | Nothing, unless you relied on the old always-green check. `start-period` is now 180 s. The probe follows `NEXTDNS_LISTEN`: it queries the host and port you configured, and a wildcard such as `:53` is probed on the `100.x` address |
 
 An OAuth client secret without `--advertise-tags` in `TS_EXTRA_ARGS` now fails at start with an explicit message instead of a failed login.
 
@@ -128,9 +130,9 @@ The environment is the source of truth for the node's Tailscale preferences: `ta
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `NEXTDNS_CACHE_SIZE` | `10MB` | In-memory cache (2-4 MB for constrained devices) |
-| `NEXTDNS_MAX_TTL` | `5s` | Max TTL to clients — low = fast config propagation |
-| `NEXTDNS_LISTEN` | `:53` | Bind address for DNS queries |
+| `NEXTDNS_CACHE_SIZE` | `20MB` | In-memory cache cap; memory is used only by cached entries, ~60-120k responses at 20 MB (2-4 MB for constrained devices) |
+| `NEXTDNS_MAX_TTL` | `30s` | Max TTL handed to clients; bounds how long a client keeps an answer after a profile change (the relay cache is flushed by NextDNS on every profile update) |
+| `NEXTDNS_LISTEN` | `:53` | Bind address for DNS queries (the health check queries this host and port) |
 
 ### Optional — Features
 
@@ -228,8 +230,8 @@ The project has not yet confirmed either of the last two points against a live t
 ### Boot sequence
 
 1. **init-config** (oneshot) — validates env vars, writes `/etc/nextdns.conf`
-2. **svc-tailscaled** (longrun) — starts the Tailscale daemon (kernel TUN; fatal if `/dev/net/tun` is missing and `TS_USERSPACE` is not `true`)
-3. **tailscale-up** (oneshot) — waits up to 30 s for the daemon socket, runs `tailscale up --reset` (bounded to 120 s), then waits up to 90 s for a `100.x` address
+2. **svc-tailscaled** (longrun) — starts the Tailscale daemon (kernel TUN; fatal if `/dev/net/tun` is missing or `CAP_NET_ADMIN` is not granted, unless `TS_USERSPACE=true`)
+3. **tailscale-up** (oneshot) — waits up to 30 s for the daemon socket, runs `tailscale up --reset` (bounded to 120 s; running out of time is reported as `did not finish within 120s`), then waits up to 90 s for a `100.x` address
 4. **svc-nextdns** (longrun) — starts NextDNS relay bound to port 53
 
 **Failure handling.** If bring-up fails (a oneshot exits non-zero, or times out), `S6_BEHAVIOUR_IF_STAGE2_FAILS=2` stops the container, so Docker's restart policy retries from a clean start. After boot, s6 supervises the longruns: if `tailscaled` or `nextdns` crashes, s6 restarts it in place and the container keeps running. A failure that persists shows up as `unhealthy` in the health check; plain Docker does not restart unhealthy containers, so use an orchestrator or an autoheal sidecar if you want that.
@@ -277,7 +279,7 @@ No. The NextDNS config includes `forwarder ts.net=100.100.100.100`, so `.ts.net`
 The 5-second `MAX_TTL` default means clients pick up changes almost immediately. No container restart needed.
 
 **How much RAM does it use?**
-~60 MB with a 10 MB cache. Should run comfortably in 128 MB. For extremely constrained environments, set `NEXTDNS_CACHE_SIZE=2MB`.
+~60 MB with the cache empty, up to ~80 MB with the 20 MB cache full. Should run comfortably in 128 MB. For extremely constrained environments, set `NEXTDNS_CACHE_SIZE=2MB`.
 
 **Can I use this without the exit node feature?**
 Yes. The exit node is entirely opt-in via `EXIT_NODE=true`. Without it, the container still needs `CAP_NET_ADMIN` and the TUN device: the relay itself runs in kernel TUN mode.
