@@ -208,7 +208,7 @@ Each region gets its own Tailscale IP. Add all of them as nameservers in the adm
 Railway, Render, and Cloud Run lack `NET_ADMIN` / `/dev/net/tun`. Since 0.3.0 the container refuses to start there unless you set `TS_USERSPACE=true` explicitly. That mode is **degraded**:
 
 - No exit node or subnet routing.
-- No kernel `tailscale0` interface, so the container has no route to `100.100.100.100`. MagicDNS forwarding (`forwarder ts.net=100.100.100.100`) is therefore expected to fail, which means tailnet clients using this relay cannot resolve `.ts.net` names through it.
+- No kernel `tailscale0` interface, so the container has no route to `100.100.100.100`. MagicDNS forwarding (`-forwarder <tailnet>.ts.net=100.100.100.100`) is therefore expected to fail, which means tailnet clients using this relay cannot resolve `.ts.net` names through it.
 - Peer queries to the node's `100.x` address reach NextDNS only through tailscaled's userspace netstack, not the kernel.
 
 The project has not yet confirmed either of the last two points against a live tailnet in userspace mode. Test with `dig @127.0.0.1 <node>.<tailnet>.ts.net` inside the container and from a peer against the node's `100.x` address before relying on it. The health check queries `127.0.0.1` in this mode, so it cannot detect either failure.
@@ -271,7 +271,7 @@ docker buildx build --platform linux/amd64,linux/arm64 -t tailwag .
 Yes, and you should. Deploy Tailwag on two or more machines, add all their Tailscale IPs as nameservers. Tailscale handles failover automatically.
 
 **Will this break MagicDNS?**
-No. The NextDNS config includes `forwarder ts.net=100.100.100.100`, so `.ts.net` queries are forwarded to Tailscale's internal resolver.
+No. The NextDNS service forwards your tailnet's own suffix (`tailXXXX.ts.net`, read from `tailscale status --json` on every start) to Tailscale's internal resolver at `100.100.100.100`. Other `*.ts.net` names, such as another tailnet's public Funnel URL, go to NextDNS like any public name.
 
 **What if I change my NextDNS config?**
 The 5-second `MAX_TTL` default means clients pick up changes almost immediately. No container restart needed.
