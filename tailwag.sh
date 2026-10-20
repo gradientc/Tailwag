@@ -163,6 +163,24 @@ on_iface "$TS_IPV4" "$TS_IFACE" \
     || warn "$TS_IPV4 is not on any interface yet; assuming $TS_IFACE."
 log "Tailscale interface: $TS_IFACE"
 
+# This tailnet's MagicDNS suffix (tailXXXX.ts.net), for the forwarder line.
+# Forwarding all of ts.net to 100.100.100.100 broke other tailnets' public
+# Funnel hostnames: the relay's quad-100 only knows our own tailnet, has no
+# upstream with accept-dns=false, and answers SERVFAIL, which NextDNS passes
+# straight to the client (first matching forwarder wins; no fallback on
+# rcode). Narrowed, every other *.ts.net name goes to NextDNS like any public
+# name. If the suffix can't be read, keep the old catch-all: own names working
+# matters more than other tailnets' Funnel URLs.
+TS_SUFFIX=$($TS_BIN status --json --peers=false 2>/dev/null \
+    | sed -n 's/^[[:space:]]*"MagicDNSSuffix":[[:space:]]*"\([^"]*\)".*/\1/p' \
+    | head -n1 || true)
+if [[ "$TS_SUFFIX" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]]; then
+    log "MagicDNS suffix: $TS_SUFFIX"
+else
+    warn "Could not read the tailnet's MagicDNS suffix (got: '${TS_SUFFIX:-<empty>}'). Forwarding all of ts.net; other tailnets' Funnel names will fail."
+    TS_SUFFIX="ts.net"
+fi
+
 TS_IPV6=""
 if [[ "$ENABLE_IPV6" == true ]]; then
     TS_IPV6=$($TS_BIN ip -6 2>/dev/null | head -n1)
@@ -224,10 +242,10 @@ systemctl stop nextdns 2>/dev/null || true
     [[ -n "$TS_IPV6" ]] && printf 'listen [%s]:53\n' "$TS_IPV6"
     printf 'cache-size %s\n' "$CACHE_SIZE"
     printf 'max-ttl %s\n' "$MAX_TTL"
+    printf 'forwarder %s=100.100.100.100\n' "$TS_SUFFIX"
     cat <<'STATIC'
 report-client-info true
 discovery-dns 100.100.100.100
-forwarder ts.net=100.100.100.100
 mdns disabled
 auto-activate false
 bogus-priv true

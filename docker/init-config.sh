@@ -48,8 +48,10 @@ auto-activate false
 bogus-priv true
 use-hosts true
 discovery-dns 100.100.100.100
-forwarder ts.net=100.100.100.100
 EOF
+
+# No forwarder line here: the MagicDNS forwarder needs the tailnet's suffix,
+# which only exists after tailscale-up. svc-nextdns passes it as -forwarder.
 
 # Append any extra nextdns args as config lines
 if [[ -n "${NEXTDNS_EXTRA_ARGS:-}" ]]; then
