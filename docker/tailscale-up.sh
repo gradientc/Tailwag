@@ -98,13 +98,25 @@ log "Running tailscale up (timeout ${UP_TIMEOUT}s)..."
 # never printed and users saw just "tailscale up failed (exit 1)" after two
 # silent minutes, with no hint that the control plane was unreachable or an
 # interactive login was pending. So: a non-zero exit after running for at least
-# UP_TIMEOUT seconds is a timeout, whatever the code. ${SECONDS} is bash's own
-# seconds counter, immune to wall-clock jumps from NTP.
+# UP_TIMEOUT seconds is a timeout, whatever the code.
+#
+# Elapsed time comes from /proc/uptime, not ${SECONDS}. Bash derives SECONDS
+# from the wall clock (measured: an LD_PRELOAD shim stepping the clock +1000 s
+# moved SECONDS by exactly 1000), so an NTP step during the call skews it. It
+# also counts whole wall-clock seconds: a failure 2.1 s in, started at x.95 s,
+# read as 3 s and was reported as a timeout with UP_TIMEOUT=3. /proc/uptime is
+# the kernel's boot-time clock (monotonic, centiseconds). Readings truncate to
+# 0.01 s, so a real timeout can read 1 cs short; hence the "- 1".
+uptime_cs() {
+    local up
+    read -r up _ < /proc/uptime
+    echo $(( 10#${up/./} ))
+}
 UP_RC=0
-UP_START=${SECONDS}
+UP_START_CS=$(uptime_cs)
 timeout "${UP_TIMEOUT}" "${TS}" ${UP_ARGS[@]+"${UP_ARGS[@]}"} || UP_RC=$?
 if (( UP_RC != 0 )); then
-    if (( UP_RC == 124 || UP_RC == 143 || SECONDS - UP_START >= UP_TIMEOUT )); then
+    if (( UP_RC == 124 || UP_RC == 143 || $(uptime_cs) - UP_START_CS >= UP_TIMEOUT * 100 - 1 )); then
         die "tailscale up did not finish within ${UP_TIMEOUT}s (control plane unreachable, or waiting for interactive login?). Check TS_AUTHKEY and outbound HTTPS to the Tailscale control server."
     fi
     die "tailscale up failed (exit ${UP_RC}). See the tailscale error above."

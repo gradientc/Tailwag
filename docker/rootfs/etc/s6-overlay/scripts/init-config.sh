@@ -34,6 +34,21 @@ LISTEN="${NEXTDNS_LISTEN:-:53}"
 CACHE="${NEXTDNS_CACHE_SIZE:-20MB}"
 MAX_TTL="${NEXTDNS_MAX_TTL:-30s}"
 
+# Userspace networking never puts the node's tailnet address on an interface,
+# so NextDNS cannot bind a 100.x or fd7a:115c:a1e0:: listen address: the relay
+# would be down and the health check (correctly) unhealthy forever. Refuse the
+# combination here, with the fix in the message. Host part of HOST:PORT;
+# brackets of an IPv6 host are removed.
+if [[ "${TS_USERSPACE:-false}" == "true" ]]; then
+    listen_host="${LISTEN%:*}"
+    listen_host="${listen_host#\[}"
+    listen_host="${listen_host%\]}"
+    if [[ "${listen_host}" =~ ^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\. \
+          || "${listen_host,,}" == fd7a:115c:a1e0:* ]]; then
+        die "NEXTDNS_LISTEN=${LISTEN} is a tailnet address, which TS_USERSPACE=true never assigns to an interface, so NextDNS could not bind it. Use NEXTDNS_LISTEN=:53 (or 127.0.0.1:53) in userspace mode."
+    fi
+fi
+
 log "Writing /etc/nextdns.conf (profile=${NEXTDNS_PROFILE}, cache=${CACHE}, ttl=${MAX_TTL})"
 
 cat > /etc/nextdns.conf <<EOF
