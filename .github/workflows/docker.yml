@@ -4,21 +4,25 @@ name: Docker
 #
 #   Event                    Tags pushed                 Notes
 #   -----------------------  --------------------------  -----------------------
-#   release (published)      0.3.0, 0.3, latest          latest only for a full
-#                                                        release, never a
-#                                                        prerelease. The bare
-#                                                        major tag (:1) is added
-#                                                        once we reach 1.0: a
-#                                                        floating :0 promises a
+#   release (published)      0.3.0, 0.3, latest,         latest only for a full
+#                            0.3.0-YYYYMMDD.HHMM         release that is the
+#                                                        highest X.Y.Z, never a
+#                                                        prerelease or a patch
+#                                                        to an older line. The
+#                                                        bare major tag (:1) is
+#                                                        added once we reach
+#                                                        1.0: a floating :0
+#                                                        promises a
 #                                                        compatibility that 0.x
 #                                                        semver does not.
 #   push to main, image      edge                        Only when files that
 #   inputs changed                                       end up in the image (or
 #                                                        this workflow) change.
-#   schedule (Mon 06:17      X.Y.Z, X.Y, latest          Rebuilds the newest full
-#   UTC) /                   (and X from 1.0)            release tag from source,
-#   workflow_dispatch                                    no cache, and re-pushes
-#                                                        its semver tags + latest.
+#   schedule (Mon 06:17      X.Y.Z, X.Y, latest          Rebuilds the highest
+#   UTC) /                   (and X from 1.0),           X.Y.Z full release from
+#   workflow_dispatch        X.Y.Z-YYYYMMDD.HHMM         source, no cache, and
+#                                                        re-pushes its semver
+#                                                        tags + latest.
 #   pull request, same       nothing (build only)        amd64 + arm64, no push.
 #   paths
 #
@@ -32,8 +36,21 @@ name: Docker
 # nothing, and the image's OS packages come from `apk` at build time. Without
 # a rebuild, :latest keeps whatever musl / busybox / openssl it was built with
 # until the next release, however many Alpine security fixes have landed since.
-# The rebuild-release job rebuilds the newest full release tag (not main, so
-# unreleased changes never reach :latest) with the cache off.
+# The rebuild-release job rebuilds the highest X.Y.Z full release (not main,
+# so unreleased changes never reach :latest) with the cache off.
+#
+# Why "highest X.Y.Z" and not "newest": `gh release list` and the
+# releases/latest API both order by creation date, and a newly published
+# release is marked Latest by default. Publishing a 0.2.3 backport after
+# 0.3.0 would otherwise push 0.2.3 over :latest, once on the release event
+# and again every Monday. Both publish jobs use `sort -V` over the full
+# release tags instead.
+#
+# Why the dated tag (X.Y.Z-YYYYMMDD.HHMM, UTC): the weekly rebuild moves
+# X.Y.Z, X.Y and latest, so the previous build loses every tag. The dated tag
+# is never moved, which gives users an immutable tag to pin and a rollback
+# target (see "Rolling back an image" in docker/README.md). ghcr-cleanup.yml
+# keeps the newest dated tags and prunes the rest.
 # Caveat: GitHub disables scheduled workflows after 60 days without repository
 # activity. If :latest looks stale, re-enable the schedule in the Actions tab
 # or run this workflow by hand (workflow_dispatch).
@@ -123,18 +140,22 @@ jobs:
       packages: write
       id-token: write      # artifact attestation (Sigstore OIDC)
       attestations: write  # artifact attestation (GitHub store)
-    # One constant group for every job that writes GHCR tags. Overlapping
-    # pushes to main, main racing a release, or the weekly rebuild racing
-    # either could otherwise finish out of order and leave a tag on the older
-    # build. A per-ref group (publish-${{ github.ref }}) did NOT prevent this:
-    # main and a release tag are different refs, so they got different groups
-    # and ran in parallel. Never cancel a running job: a cancelled release
-    # publish would leave its semver tags unset. GitHub keeps at most one
-    # running and one pending job per group and replaces an older pending job
-    # with a newer one, so only a three-deep pile-up can drop a queued job.
+    # Two groups, split by the tags each event writes. A push to main writes
+    # only :edge; a release and the weekly rebuild both write X.Y.Z, X.Y and
+    # latest. Jobs that share tags must run one at a time, or they can finish
+    # out of order and leave a tag on the older build. A per-ref group
+    # (publish-${{ github.ref }}) did NOT prevent this: the weekly rebuild
+    # runs on main, a release on its tag ref, so they got different groups
+    # and ran in parallel. Edge and release share no tag, so they may overlap.
+    # Never cancel a running job: a cancelled release publish would leave its
+    # semver tags unset. queue: max, because the default (queue: single)
+    # keeps one pending job per group and cancels it when another arrives, so
+    # a release queued behind a running publish could be dropped silently.
+    # With queue: max, pending jobs wait in line (up to 100).
     concurrency:
-      group: publish
+      group: ${{ github.event_name == 'push' && 'publish-edge' || 'publish-release' }}
       cancel-in-progress: false
+      queue: max
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -152,7 +173,36 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # :latest only for the highest X.Y.Z full release (see "Why highest
+      # X.Y.Z" above). The tag itself is added to the list, so the answer does
+      # not depend on the release API already listing the one just published.
+      # The tag goes through env, never ${{ }} inside run: (same pattern as
+      # checks.yml).
+      - name: Is this the highest full release?
+        id: highest
+        if: github.event_name == 'release' && !github.event.release.prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # A plain assignment, so a failed API call fails the step (bash -e)
+          # instead of leaving only TAG in the list and moving :latest.
+          released="$(gh release list --repo "${GITHUB_REPOSITORY}" --exclude-pre-releases --exclude-drafts \
+            --limit 100 --json tagName --jq '.[].tagName')"
+          highest="$(
+            printf '%s\n' "${released}" "${TAG}" \
+              | { grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V | tail -n 1
+          )"
+          if [[ "${TAG}" == "${highest}" ]]; then
+            echo "latest=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "::notice::${TAG} is not the highest full release (${highest:-none}); :latest stays where it is"
+            echo "latest=false" >> "${GITHUB_OUTPUT}"
+          fi
+
       # Tags here have no "v" prefix (0.2.1); type=semver parses them as is.
+      # The suffixed semver line is the immutable dated tag (UTC); the weekly
+      # rebuild adds one the same way.
       - name: Extract image metadata (tags & labels)
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -164,7 +214,8 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}},enable=${{ !startsWith(github.ref_name, '0.') }}
-            type=raw,value=latest,enable=${{ github.event_name == 'release' && !github.event.release.prerelease }}
+            type=semver,pattern={{version}},suffix=-{{date 'YYYYMMDD.HHmm'}}
+            type=raw,value=latest,enable=${{ steps.highest.outputs.latest == 'true' }}
             type=edge,branch=main
 
       - name: Build and push
@@ -199,10 +250,11 @@ jobs:
       packages: write
       id-token: write      # artifact attestation (Sigstore OIDC)
       attestations: write  # artifact attestation (GitHub store)
-    # Same group as build-and-push: see the comment there.
+    # Same group as a release publish: see the comment on build-and-push.
     concurrency:
-      group: publish
+      group: publish-release
       cancel-in-progress: false
+      queue: max
 
     steps:
       # fetch-depth: 0 brings every tag, so the release tag found below can be
@@ -215,21 +267,22 @@ jobs:
 
       # The tag goes through env, never ${{ }} inside run:, so a crafted
       # tag name cannot inject shell (same pattern as checks.yml).
-      - name: Find the latest full release
+      # Highest X.Y.Z, not the most recently created release: see "Why highest
+      # X.Y.Z" above. Release tags carry no "v" prefix (0.3.0); anything else
+      # is ignored rather than guessed at.
+      - name: Find the highest full release
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="$(gh release list --repo "${GITHUB_REPOSITORY}" --exclude-pre-releases --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName')"
-          # jq prints "null" for an empty list on some gh versions.
-          if [[ -z "${tag}" || "${tag}" == "null" ]]; then
-            echo "::error::no published non-prerelease release found in ${GITHUB_REPOSITORY}; nothing to rebuild"
-            exit 1
-          fi
-          # Release tags carry no "v" prefix (0.3.0). Refuse anything else
-          # rather than guess which semver tags to overwrite.
-          if [[ ! "${tag}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::latest release tag '${tag}' is not X.Y.Z; refusing to derive image tags from it"
+          released="$(gh release list --repo "${GITHUB_REPOSITORY}" --exclude-pre-releases --exclude-drafts \
+            --limit 100 --json tagName --jq '.[].tagName')"
+          tag="$(
+            printf '%s\n' "${released}" \
+              | { grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V | tail -n 1
+          )"
+          if [[ -z "${tag}" ]]; then
+            echo "::error::no published full release with an X.Y.Z tag found in ${GITHUB_REPOSITORY}; nothing to rebuild"
             exit 1
           fi
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
@@ -246,7 +299,9 @@ jobs:
       # Same tag set a release publish gets. metadata-action cannot be used
       # here: its semver type reads github.ref, which is main for a scheduled
       # run, not the release tag. The bare major tag is skipped for 0.x, same
-      # rule as build-and-push.
+      # rule as build-and-push. The dated tag (UTC, to the minute, so a manual
+      # re-run on the same day does not move it) is the immutable rollback
+      # target.
       - name: Compute image tags
         id: tags
         env:
@@ -257,6 +312,7 @@ jobs:
           {
             echo 'list<<TAGS_EOF'
             echo "${IMAGE}:${TAG}"
+            echo "${IMAGE}:${TAG}-$(date -u +%Y%m%d.%H%M)"
             echo "${IMAGE}:${major}.${minor}"
             if [[ "${major}" != "0" ]]; then
               echo "${IMAGE}:${major}"
