@@ -55,12 +55,21 @@ docker run -d \
 
 | Tag | Points at |
 | --- | --- |
-| `:0.3.0` | That exact release. Pin this in production |
+| `:0.3.0` | That release's source, rebuilt weekly (below). Pin this in production |
+| `:0.3.0-20261026.0617` | One build of that release, never moved (UTC build time). Pin this for a byte-for-byte reproducible image |
 | `:0.3` | Newest patch release of 0.3 |
-| `:latest` | Newest full release (never a prerelease) |
+| `:latest` | Highest full release (never a prerelease, never a patch to an older line) |
 | `:edge` | Tip of `main`, rebuilt only when the image's inputs change. For testing |
 
-`:latest` and the newest release's version tags are rebuilt from the release tag every Monday with no cache, so they pick up newly published Alpine package updates without a new release. Tailscale, NextDNS and s6-overlay stay at the versions pinned in that release. Pull again, or pin a digest if you need a byte-for-byte reproducible image.
+`:latest` and the highest release's version tags are rebuilt from the release tag every Monday with no cache, so they pick up newly published Alpine package updates without a new release. Tailscale, NextDNS and s6-overlay stay at the versions pinned in that release. Each build also gets a dated tag (`X.Y.Z-YYYYMMDD.HHMM`) that never moves; the newest 12 are kept.
+
+**Rolling back an image.** If a weekly rebuild misbehaves, pin the previous dated tag in your compose file or `docker run` (`ghcr.io/gradientc/tailwag:0.3.0-20261019.0617`). List the dated tags on the [package page](https://github.com/gradientc/Tailwag/pkgs/container/tailwag). Maintainers can point a moving tag back at it without a rebuild:
+
+```bash
+docker buildx imagetools create -t ghcr.io/gradientc/tailwag:latest ghcr.io/gradientc/tailwag:0.3.0-20261019.0617
+```
+
+The next Monday rebuild moves the tag again, so disable the schedule or fix the cause first.
 
 There is no floating `:0` tag: 0.x releases make no compatibility promise across minors. A stale `:0` from 0.2.1 may still exist in the registry; do not use it. Verify an image's origin with `gh attestation verify oci://ghcr.io/gradientc/tailwag:0.3.0 -R gradientc/Tailwag`.
 
@@ -122,7 +131,7 @@ The environment is the source of truth for the node's Tailscale preferences: `ta
 | --- | --- | --- |
 | `TS_HOSTNAME` | `tailwag` | Node name on your tailnet |
 | `TS_ACCEPT_DNS` | `false` | Accept tailnet DNS (must be false for relay nodes) |
-| `TS_USERSPACE` | `false` | Userspace networking (no TUN device needed). Explicit, degraded opt-in; without it a missing `/dev/net/tun` is fatal |
+| `TS_USERSPACE` | `false` | Userspace networking (no TUN device needed). Explicit, degraded opt-in; without it a missing `/dev/net/tun` is fatal. Incompatible with a tailnet `NEXTDNS_LISTEN` host |
 | `TS_EXTRA_ARGS` | | Extra flags for `tailscale up`, split on whitespace. Required with an OAuth client secret: `--advertise-tags=tag:dns-relay`. Keep it unchanged after first boot |
 | `TS_DEBUG_FIREWALL_MODE` | | Leave unset (auto) or `iptables`. Do not set `nftables`: the image forces iptables-legacy ([tailscale#17854](https://github.com/tailscale/tailscale/issues/17854)) |
 
@@ -132,7 +141,7 @@ The environment is the source of truth for the node's Tailscale preferences: `ta
 | --- | --- | --- |
 | `NEXTDNS_CACHE_SIZE` | `20MB` | In-memory cache cap; memory is used only by cached entries, ~60-120k responses at 20 MB (2-4 MB for constrained devices) |
 | `NEXTDNS_MAX_TTL` | `30s` | Max TTL handed to clients; bounds how long a client keeps an answer after a profile change (the relay cache is flushed by NextDNS on every profile update) |
-| `NEXTDNS_LISTEN` | `:53` | Bind address for DNS queries (the health check queries this host and port) |
+| `NEXTDNS_LISTEN` | `:53` | Bind address for DNS queries (the health check queries this host and port). With `TS_USERSPACE=true`, a tailnet host (`100.x`, `fd7a:115c:a1e0::`) is refused at start: that address is never on an interface, so NextDNS could not bind it. Use `:53` or `127.0.0.1:53` |
 
 ### Optional — Features
 
@@ -213,7 +222,7 @@ Railway, Render, and Cloud Run lack `NET_ADMIN` / `/dev/net/tun`. Since 0.3.0 th
 - No kernel `tailscale0` interface, so the container has no route to `100.100.100.100`. MagicDNS forwarding (`forwarder ts.net=100.100.100.100`) is therefore expected to fail, which means tailnet clients using this relay cannot resolve `.ts.net` names through it.
 - Peer queries to the node's `100.x` address reach NextDNS only through tailscaled's userspace netstack, not the kernel.
 
-The project has not yet confirmed either of the last two points against a live tailnet in userspace mode. Test with `dig @127.0.0.1 <node>.<tailnet>.ts.net` inside the container and from a peer against the node's `100.x` address before relying on it. The health check queries `127.0.0.1` in this mode, so it cannot detect either failure.
+The project has not yet confirmed either of the last two points against a live tailnet in userspace mode. Test with `dig @127.0.0.1 <node>.<tailnet>.ts.net` inside the container and from a peer against the node's `100.x` address before relying on it. The health check queries `127.0.0.1` in this mode, so it cannot detect either failure. Keep `NEXTDNS_LISTEN` a wildcard (`:53`) or loopback here: a tailnet listen address stops the container at start.
 
 ## How it works
 
@@ -276,7 +285,7 @@ Yes, and you should. Deploy Tailwag on two or more machines, add all their Tails
 No. The NextDNS config includes `forwarder ts.net=100.100.100.100`, so `.ts.net` queries are forwarded to Tailscale's internal resolver.
 
 **What if I change my NextDNS config?**
-The 5-second `MAX_TTL` default means clients pick up changes almost immediately. No container restart needed.
+NextDNS flushes the relay cache the moment the profile changes, and the 30-second `MAX_TTL` default bounds how long a client keeps an older answer. No container restart needed.
 
 **How much RAM does it use?**
 ~60 MB with the cache empty, up to ~80 MB with the 20 MB cache full. Should run comfortably in 128 MB. For extremely constrained environments, set `NEXTDNS_CACHE_SIZE=2MB`.
