@@ -11,6 +11,12 @@ name: GHCR cleanup
 # `docker pull` of that tag on every architecture. ghcr-cleanup-action walks
 # each tagged index and keeps the manifests it references.
 #
+# Dated tags (X.Y.Z-YYYYMMDD.HHMM, one per release publish and weekly rebuild
+# in docker.yml) are never untagged, so the first step never removes them.
+# The second step keeps the newest 12 (about three months of weekly rebuilds)
+# as rollback targets and deletes older ones. An image that also carries a
+# live tag (latest, X.Y.Z) only loses the dated tag; the image stays.
+#
 # Manual only, dry run by default. Read the log of a dry run first.
 
 on:
@@ -33,12 +39,21 @@ jobs:
     name: Prune untagged and orphaned versions
     runs-on: ubuntu-latest
     steps:
-      - uses: dataaxiom/ghcr-cleanup-action@v1.2.2
+      - uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
         with:
           package: tailwag
           delete-untagged: true
           delete-orphaned-images: true
           delete-ghost-images: true
           delete-partial-images: true
+          validate: true
+          dry-run: ${{ inputs.dry-run }}
+
+      - name: Keep the newest 12 dated tags
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
+        with:
+          package: tailwag
+          delete-tags: '*.*.*-????????.????'
+          keep-n-tagged: 12
           validate: true
           dry-run: ${{ inputs.dry-run }}

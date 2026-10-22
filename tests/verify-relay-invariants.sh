@@ -125,6 +125,10 @@ need docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh '--accept-dns="${TS_AC
 need docker/tailscale-up.sh '--accept-dns="${TS_ACCEPT_DNS:-false}"'
 need tailwag.sh "--accept-dns=false"
 
+# Host-only observability: the cache cap is sized from evidence, so the host
+# generator must keep cache-metrics on (the container has no reader for it).
+need tailwag.sh "cache-metrics true"
+
 # Host loop guard is applied on every run, not offered as a prompt (audit P0).
 need tailwag.sh 'set --accept-dns=false'
 if grep -q 'accept-dns=false" on this server now' tailwag.sh; then
@@ -159,14 +163,17 @@ done
 # --- Container fail-closed / health / env-as-truth (0.3.0) -------------------
 
 need docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run "FATAL: /dev/net/tun not found"
+need docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run "FATAL: CAP_NET_ADMIN is not in the effective capability set"
 if grep -q 'falling back to userspace' docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run; then
     die "svc-tailscaled silently falls back to userspace again; it must fail closed"
 fi
 need docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh "    --reset"
 # shellcheck disable=SC2016
 need docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh 'timeout "${UP_TIMEOUT}"'
+need docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh "did not finish within"
 need docker/Dockerfile 'CMD ["/usr/local/bin/tailwag-health"]'
 need docker/rootfs/usr/local/bin/tailwag-health "status: NOERROR"
+need docker/rootfs/usr/local/bin/tailwag-health "/etc/nextdns.conf"
 [[ -x docker/rootfs/usr/local/bin/tailwag-health ]] \
     || die "docker/rootfs/usr/local/bin/tailwag-health is not executable"
 need docker/.dockerignore ".env"
