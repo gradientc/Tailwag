@@ -10,6 +10,7 @@
 #    - Duplicated scripts are byte-identical to their source of truth
 #    - Both nextdns.conf generators (host + container) share the invariants
 #    - The host loop guard is applied, never asked for
+#    - tailwag.sh keeps VERSION="dev" for checks.yml to stamp at release
 #
 #  Run by .github/workflows/checks.yml on every push and pull request.
 # =============================================================================
@@ -38,6 +39,14 @@ same() {
         || die "${copy} differs from ${source} (edit the source, then mirror it)"
     log "ok  ${copy} == ${source}"
 }
+
+# --- Release version stamp ---------------------------------------------------
+# checks.yml replaces this exact line with the release tag. Any other value in
+# the source would ship unstamped (or stamp the wrong line), so pin it here.
+
+[[ "$(grep -c '^readonly VERSION=' tailwag.sh)" -eq 1 ]] \
+    || die "tailwag.sh must have exactly one readonly VERSION= line"
+need tailwag.sh 'readonly VERSION="dev"'
 
 # --- Pins: Dockerfile ARG is the build source of truth; table must match -----
 
