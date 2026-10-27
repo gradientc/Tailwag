@@ -1,8 +1,9 @@
 # =============================================================================
 #  TAILWAG DOCKER
 #  A portable, caching NextDNS relay for Tailscale networks.
-#  Component versions are the four ARG pins below; image tags follow the
-#  repository release (see .github/workflows/docker.yml).
+#  Component versions are the four ARG pins below, with Alpine also pinned
+#  by digest; image tags follow the repository release (see
+#  .github/workflows/docker.yml).
 #
 #  Architecture:
 #    Alpine base  →  s6-overlay v3 (PID 1, process supervision)
@@ -19,16 +20,21 @@
 
 # --- Build args --------------------------------------------------------------
 
-ARG ALPINE_VERSION=3.24.2
+ARG ALPINE_VERSION=3.24.3
+# Multi-arch index digest of alpine:${ALPINE_VERSION} on Docker Hub. The tag
+# alone is mutable (Docker Official Images rebuild and re-push it), so the
+# digest is what makes two builds of the same commit use the same base. Bump
+# it together with ALPINE_VERSION; tests/verify-relay-invariants.sh checks it.
+ARG ALPINE_DIGEST=sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 ARG S6_OVERLAY_VERSION=3.2.3.2
-ARG TAILSCALE_VERSION=1.102.5
+ARG TAILSCALE_VERSION=1.104.2
 ARG NEXTDNS_VERSION=1.47.3
 
 # =============================================================================
 #  Stage 1: Download s6-overlay for the target architecture
 # =============================================================================
 
-FROM alpine:${ALPINE_VERSION} AS s6-downloader
+FROM alpine:${ALPINE_VERSION}@${ALPINE_DIGEST} AS s6-downloader
 ARG S6_OVERLAY_VERSION
 ARG TARGETARCH
 
@@ -52,7 +58,7 @@ RUN apk add --no-cache curl tar xz \
 #  Stage 2: Download Tailscale binaries
 # =============================================================================
 
-FROM alpine:${ALPINE_VERSION} AS tailscale-downloader
+FROM alpine:${ALPINE_VERSION}@${ALPINE_DIGEST} AS tailscale-downloader
 ARG TAILSCALE_VERSION
 ARG TARGETARCH
 
@@ -78,7 +84,7 @@ RUN apk add --no-cache curl tar \
 #  Stage 3: Download NextDNS CLI
 # =============================================================================
 
-FROM alpine:${ALPINE_VERSION} AS nextdns-downloader
+FROM alpine:${ALPINE_VERSION}@${ALPINE_DIGEST} AS nextdns-downloader
 ARG NEXTDNS_VERSION
 ARG TARGETARCH
 
@@ -97,7 +103,7 @@ RUN apk add --no-cache curl tar \
 #  Stage 4: Final image
 # =============================================================================
 
-FROM alpine:${ALPINE_VERSION}
+FROM alpine:${ALPINE_VERSION}@${ALPINE_DIGEST}
 
 LABEL maintainer="Tailwag" \
     description="Portable caching NextDNS relay for Tailscale networks" \

@@ -4,6 +4,7 @@
 #  verify-relay-invariants.sh
 #  Static checks against the shipped Tailwag sources (not a reimplementation):
 #    - Dockerfile ARG pins match the AGENTS.md "Current pins" table
+#    - Every FROM uses the Alpine tag@digest pin, also in that table
 #    - s6 / Tailscale / NextDNS checksum verification steps are still present
 #    - MagicDNS forwarder, accept-dns=false default, and 100. wait still exist
 #    - Duplicated scripts are byte-identical to their source of truth
@@ -61,6 +62,26 @@ for key in ALPINE_VERSION S6_OVERLAY_VERSION TAILSCALE_VERSION NEXTDNS_VERSION; 
         || die "${key} mismatch: Dockerfile=${PINS[${key}]} AGENTS.md=${table_pin}"
     log "ok  ${key} Dockerfile==AGENTS.md==${PINS[${key}]}"
 done
+
+# --- Alpine base pinned by digest, not just by the mutable tag ---------------
+# Every stage must use the same tag@digest so all four stages build from one
+# known base. A bare `FROM alpine:${ALPINE_VERSION}` (or :latest) fails here.
+
+alpine_digest="$(grep -E '^ARG ALPINE_DIGEST=' docker/Dockerfile | head -n1 || true)"
+alpine_digest="${alpine_digest#*=}"
+[[ "${alpine_digest}" =~ ^sha256:[0-9a-f]{64}$ ]] \
+    || die "ARG ALPINE_DIGEST missing or not sha256:<64 hex> in docker/Dockerfile"
+table_digest="$(grep -E "^\| +\`ALPINE_DIGEST\`" AGENTS.md | awk -F'|' 'NR==1 {gsub(/[ `]/,"",$3); print $3}' || true)"
+[[ "${table_digest}" == "${alpine_digest}" ]] \
+    || die "ALPINE_DIGEST mismatch: Dockerfile=${alpine_digest} AGENTS.md=${table_digest:-<missing>}"
+mapfile -t FROM_LINES < <(grep -E '^FROM ' docker/Dockerfile)
+[[ ${#FROM_LINES[@]} -gt 0 ]] || die "no FROM lines in docker/Dockerfile"
+want_from="FROM alpine:\${ALPINE_VERSION}@\${ALPINE_DIGEST}"
+for line in "${FROM_LINES[@]}"; do
+    [[ "${line}" == "${want_from}"* ]] \
+        || die "unpinned base image in docker/Dockerfile: ${line}"
+done
+log "ok  ALPINE_DIGEST Dockerfile==AGENTS.md, ${#FROM_LINES[@]} FROM lines use tag@digest"
 
 # --- Checksum verification still in the shipped Dockerfile -------------------
 
@@ -178,4 +199,4 @@ need docker/rootfs/usr/local/bin/tailwag-health "/etc/nextdns.conf"
     || die "docker/rootfs/usr/local/bin/tailwag-health is not executable"
 need docker/.dockerignore ".env"
 
-log "all relay invariants hold for pins Alpine=${PINS[ALPINE_VERSION]} s6=${PINS[S6_OVERLAY_VERSION]} tailscale=${PINS[TAILSCALE_VERSION]} nextdns=${PINS[NEXTDNS_VERSION]}"
+log "all relay invariants hold for pins Alpine=${PINS[ALPINE_VERSION]}@${alpine_digest:0:19} s6=${PINS[S6_OVERLAY_VERSION]} tailscale=${PINS[TAILSCALE_VERSION]} nextdns=${PINS[NEXTDNS_VERSION]}"
