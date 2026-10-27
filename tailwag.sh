@@ -41,7 +41,10 @@
 
 set -euo pipefail
 
-readonly VERSION="0.3.0"
+# "dev" in the source. checks.yml stamps the release tag over it in the copy
+# attached to each GitHub release, so an installed host records which release
+# wrote its config, and a copy fetched from main says it is unreleased.
+readonly VERSION="dev"
 
 # --- Tuning ------------------------------------------------------------------
 #

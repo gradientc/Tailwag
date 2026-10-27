@@ -3,9 +3,9 @@ name: Checks
 # Static relay invariants (tests/verify-relay-invariants.sh): pins vs the
 # AGENTS.md table, checksum steps, MagicDNS / loop-guard / boot-gate text,
 # and byte-identity of every duplicated script. Cheap, so it runs on every
-# push and PR. On a published release it also checks that the tag matches
-# tailwag.sh's VERSION, so a release can never ship a stale version string,
-# then attaches the installer to the release (release-assets below).
+# push and PR. On a published release it also checks that the tag is a bare
+# X.Y.Z, then attaches the installer, stamped with that tag, to the release
+# (release-assets below).
 
 on:
   push:
@@ -27,31 +27,31 @@ jobs:
       - name: Verify relay invariants
         run: bash tests/verify-relay-invariants.sh
 
-      # Tags in this repo carry no "v" prefix (0.2.0, 0.2.1), so the tag and
-      # VERSION are compared as plain strings. The tag goes through env, not
-      # ${{ }} inside the script, so a crafted tag name cannot inject shell.
-      - name: Tag matches tailwag.sh VERSION
+      # Release tags carry no "v" prefix (0.3.0, not v0.3.0). docker.yml's
+      # :latest selection and :0 guard only understand bare X.Y.Z, and
+      # v0.3.1 (2026-10-27) slipped through both: no :latest, a stray :0,
+      # and a release marked Latest with no assets. A prerelease may add a
+      # suffix (0.4.0-rc.1). The same check gates docker.yml; this copy
+      # stops the assets, which are stamped with the tag below. The tag goes
+      # through env, not ${{ }} inside the script, so a crafted tag name
+      # cannot inject shell.
+      - name: Release tag is X.Y.Z
         if: github.event_name == 'release'
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          version="$(sed -n 's/^readonly VERSION="\(.*\)"$/\1/p' tailwag.sh)"
-          if [[ -z "${version}" ]]; then
-            echo "::error file=tailwag.sh::no readonly VERSION=\"...\" line found"
+          if [[ ! "${TAG}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::release tag '${TAG}' is not X.Y.Z (no v prefix); delete the release and tag, then publish it again as X.Y.Z"
             exit 1
           fi
-          if [[ "${version}" != "${TAG}" ]]; then
-            echo "::error file=tailwag.sh::VERSION=${version} but release tag is ${TAG}"
-            exit 1
-          fi
-          echo "tailwag.sh VERSION ${version} matches tag ${TAG}"
+          echo "release tag ${TAG} is well formed"
 
   # A GitHub release used to produce only a container image; the host
   # installer was never attached, so the README could only point curl | bash
   # at the mutable main branch. Every release now carries tailwag.sh, a
   # SHA256SUMS file and a GitHub artifact attestation for the script:
   #   gh attestation verify tailwag.sh -R gradientc/Tailwag
-  # Runs only after the invariants and the tag/VERSION gate pass.
+  # Runs only after the invariants and the tag format check pass.
   release-assets:
     name: Attach tailwag.sh to the release
     if: github.event_name == 'release'
@@ -63,6 +63,21 @@ jobs:
       attestations: write  # artifact attestation (GitHub store)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # VERSION used to be bumped by hand in a release PR and checked against
+      # the tag here. Forgetting the bump failed the 0.3.1 release and left it
+      # without assets, all for one line. The source now says "dev" (pinned by
+      # verify-relay-invariants.sh) and the tag is stamped in before the
+      # checksum and the attestation, so both cover the stamped file. TAG is
+      # safe in sed: the invariants job allowed only [0-9A-Za-z.-].
+      - name: Stamp the release version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          sed -i "s/^readonly VERSION=\"dev\"\$/readonly VERSION=\"${TAG}\"/" tailwag.sh
+          grep -qxF "readonly VERSION=\"${TAG}\"" tailwag.sh \
+            || { echo "::error file=tailwag.sh::could not stamp VERSION=${TAG}"; exit 1; }
+          echo "tailwag.sh stamped VERSION=${TAG}"
 
       - name: Checksums
         run: sha256sum tailwag.sh > SHA256SUMS

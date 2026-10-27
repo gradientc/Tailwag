@@ -173,6 +173,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Release tags must be bare X.Y.Z (prereleases X.Y.Z-suffix). Both the
+      # :latest selection below and the :0 guard on the bare major tag assume
+      # it, while metadata-action strips a "v" and happily tags the image.
+      # v0.3.1 (2026-10-27) therefore published 0.3.1, 0.3 and a stray :0,
+      # skipped :latest, and the run still went green. Fail it instead; the
+      # same check in checks.yml stops the release assets.
+      - name: Release tag is X.Y.Z
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "${TAG}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::release tag '${TAG}' is not X.Y.Z (no v prefix); nothing pushed"
+            exit 1
+          fi
+
       # :latest only for the highest X.Y.Z full release (see "Why highest
       # X.Y.Z" above). The tag itself is added to the list, so the answer does
       # not depend on the release API already listing the one just published.

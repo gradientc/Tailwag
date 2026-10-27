@@ -45,7 +45,7 @@ There are two supported delivery mechanisms that share the same principles:
 ├── LICENSE, SECURITY.md, README.md
 ├── .github/workflows/
 │   ├── shellcheck.yml         # Enforces ShellCheck on a curated list of scripts (update when adding files)
-│   ├── checks.yml             # Runs tests/verify-relay-invariants.sh; on release, tag must equal tailwag.sh VERSION
+│   ├── checks.yml             # Runs tests/verify-relay-invariants.sh; on release, checks the tag is X.Y.Z and attaches tailwag.sh stamped with it
 │   ├── docker.yml             # Multi-arch build; publishes :edge (main, image paths only) and semver + :latest (releases)
 │   └── ghcr-cleanup.yml       # Manual, dry-run-by-default pruning of orphaned GHCR versions (multi-arch aware)
 └── docker/
@@ -298,7 +298,8 @@ When you touch any of the four ARG lines, you **must** also update this table an
 
 ## Release & Versioning
 
-- `tailwag.sh` carries its own `readonly VERSION="0.3.0"` constant. `checks.yml` fails a published release whose tag (no `v` prefix, e.g. `0.2.2`) differs from it, so bump `VERSION` in the release PR, not after.
+- Release tags are bare `X.Y.Z` (prereleases `X.Y.Z-suffix`), never `vX.Y.Z`. `checks.yml` and `docker.yml` both fail a release whose tag is anything else: `docker.yml`'s `latest` selection and `:0` guard only understand the bare form (a `v0.3.1` release published a stray `:0` and skipped `latest`). Editing a published release's tag fires no `published` event, so nothing re-runs; to fix a bad tag, delete the release and tag and publish again.
+- `tailwag.sh` keeps `readonly VERSION="dev"` in the source; do not bump it. On release, `checks.yml` stamps the tag into the attached copy before computing `SHA256SUMS` and the attestation. `tests/verify-relay-invariants.sh` fails if the source line is anything but `"dev"`.
 - On release, `checks.yml` attaches `tailwag.sh`, `SHA256SUMS` and an artifact attestation to the GitHub release. The README install commands use `releases/latest/download/`, so a release without these assets breaks them.
 - Docker image component versions are controlled by the four `ARG` lines at the top of the Dockerfile.
 - Image tags (`docker.yml`): a full release gets `X.Y.Z`, `X.Y` and `latest`; a prerelease gets `X.Y.Z` and `X.Y` only; the bare major tag starts at 1.0. A push to `main` that touches `docker/**` (Markdown excluded) or the workflow publishes `edge`; nothing else on `main` publishes. `latest` follows the highest `X.Y.Z` full release (`sort -V`), never the most recently created one, so a patch to an older line does not take it. A weekly scheduled run (and `workflow_dispatch`) rebuilds that highest release tag with no cache and re-pushes its semver tags and `latest`, so the image picks up Alpine security updates (`apk upgrade` in the Dockerfile) without waiting for a release; it builds the release tag's own Dockerfile, so the `apk upgrade` only takes effect for releases cut after it was added. Every release publish and rebuild also pushes an immutable `X.Y.Z-YYYYMMDD.HHMM` tag (UTC); `ghcr-cleanup.yml` keeps the newest 12. Concurrency: `publish-edge` for pushes to main, `publish-release` for releases and rebuilds (they share tags), both `queue: max` so a queued publish is never dropped. Provenance is a GitHub artifact attestation (`provenance: false` in BuildKit), so GHCR does not fill up with `unknown/unknown` attestation manifests.
