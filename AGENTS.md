@@ -65,7 +65,7 @@ There are two supported delivery mechanisms that share the same principles:
             │   ├── init-config/   # oneshot – validates + writes /etc/nextdns.conf
             │   ├── svc-tailscaled/ # longrun – the daemon (fatal without /dev/net/tun unless TS_USERSPACE=true, firewall mode override)
             │   ├── tailscale-up/   # oneshot – waits for socket, bounded `tailscale up --reset`, then polls for a 100. IP
-            │   └── svc-nextdns/    # longrun – `nextdns run -config-file /etc/nextdns.conf`
+            │   └── svc-nextdns/    # longrun – `nextdns run -config-file /etc/nextdns.conf -forwarder <suffix>=100.100.100.100`
             └── user-bundles.d/user/contents.d/ # declares the startup set
 ```
 
@@ -110,7 +110,7 @@ If you add a new `.sh` file, add it to the command above. Extensionless scripts 
 bash tests/verify-relay-invariants.sh
 ```
 
-CI runs it on every push and PR (`.github/workflows/checks.yml`). It fails if a duplicated script drifts from its source of truth, if either `nextdns.conf` generator loses a shared invariant line (`forwarder ts.net=…`, `discovery-dns`, `bogus-priv true`, `auto-activate false`, `mdns disabled`), if the host loop guard turns back into a prompt, or if the Dockerfile pins and the table below disagree.
+CI runs it on every push and PR (`.github/workflows/checks.yml`). It fails if a duplicated script drifts from its source of truth, if either `nextdns.conf` generator loses a shared invariant line (`discovery-dns`, `bogus-priv true`, `auto-activate false`, `mdns disabled`), if either side forwards all of `ts.net` instead of the tailnet's own suffix, if the host loop guard turns back into a prompt, or if the Dockerfile pins and the table below disagree.
 
 ### Testing the host script
 
@@ -182,7 +182,7 @@ Fly.io deployments are fully supported (see `fly.toml` and the docker README).
 ### Documentation & comments
 
 - Prefer tables for variables, steps, and component roles (see READMEs).
-- Every workaround (iptables-legacy, 90 s timeout, `forwarder ts.net=...`) must have a comment explaining the concrete failure it prevents.
+- Every workaround (iptables-legacy, 90 s timeout, the own-suffix MagicDNS forwarder) must have a comment explaining the concrete failure it prevents.
 - Keep the "How it works" ASCII diagrams in sync with reality.
 
 **High-signal locations whose style and logic you should internalize**
@@ -208,7 +208,9 @@ Fly.io deployments are fully supported (see `fly.toml` and the docker README).
    - Install the `iptables-legacy` package and point `/usr/sbin/iptables` + `/usr/sbin/ip6tables` at the legacy multi-call binary (see Dockerfile and tailscale#17854). Paths are `/usr/sbin`, **not** `/sbin` — the old `/sbin/iptables-legacy` links were dangling and broke exit-node/subnet NAT. Removing or regressing this silently breaks users on Synology and other legacy-iptables hosts.
 
 3. **MagicDNS preservation**
-   - `forwarder ts.net=100.100.100.100` and `discovery-dns 100.100.100.100` in the generated `nextdns.conf` are mandatory. Clients on the tailnet must still resolve `.ts.net` names.
+   - `forwarder <MagicDNSSuffix>=100.100.100.100` and `discovery-dns 100.100.100.100` are mandatory. Clients on the tailnet must still resolve `.ts.net` names.
+   - Forward the tailnet's **own** suffix (from `tailscale status --json`), never all of `ts.net`: the relay's quad-100 runs with accept-dns=false, has no upstream, and SERVFAILs every other tailnet's public Funnel name; NextDNS takes the first matching forwarder and never falls back on an rcode. `ts.net` is only the fallback when the suffix can't be read.
+   - Host: `tailwag.sh` writes the line into `/etc/nextdns.conf`. Container: the suffix exists only after `tailscale-up`, so `svc-nextdns/run` passes `-forwarder` on the command line (matched before config-file forwarders) and `init-config` writes no forwarder line.
 
 4. **State persistence**
    - `/var/lib/tailscale` (volume in compose, fly.toml mount, or host) must survive restarts. Without it every container launch creates a brand-new Tailscale node.

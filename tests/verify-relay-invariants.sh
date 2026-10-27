@@ -5,7 +5,8 @@
 #  Static checks against the shipped Tailwag sources (not a reimplementation):
 #    - Dockerfile ARG pins match the AGENTS.md "Current pins" table
 #    - s6 / Tailscale / NextDNS checksum verification steps are still present
-#    - MagicDNS forwarder, accept-dns=false default, and 100. wait still exist
+#    - MagicDNS forwarder (own suffix only), accept-dns=false default, and
+#      100. wait still exist
 #    - Duplicated scripts are byte-identical to their source of truth
 #    - Both nextdns.conf generators (host + container) share the invariants
 #    - The host loop guard is applied, never asked for
@@ -93,12 +94,11 @@ cmp -s -- "${HEREDOC}" scripts/wait-listen-addrs \
 log "ok  tailwag.sh <<'WAIT' heredoc == scripts/wait-listen-addrs"
 
 # --- Shared nextdns.conf invariants in both generators -----------------------
-# MagicDNS (.ts.net → 100.100.100.100), no private-range leaks upstream, no
+# MagicDNS discovery via 100.100.100.100, no private-range leaks upstream, no
 # system resolver takeover, no mDNS listener on public NICs.
 
 for gen in tailwag.sh docker/rootfs/etc/s6-overlay/scripts/init-config.sh; do
     for line in \
-        "forwarder ts.net=100.100.100.100" \
         "discovery-dns 100.100.100.100" \
         "bogus-priv true" \
         "auto-activate false" \
@@ -107,13 +107,28 @@ for gen in tailwag.sh docker/rootfs/etc/s6-overlay/scripts/init-config.sh; do
     done
 done
 
-# --- MagicDNS: .ts.net → 100.100.100.100 in generated NextDNS config ---------
+# --- MagicDNS: own tailnet suffix → 100.100.100.100 --------------------------
+# Only this tailnet's suffix (read from `tailscale status --json`) goes to
+# quad-100. A bare `forwarder ts.net=` sends other tailnets' public Funnel
+# names to a quad-100 that can only SERVFAIL them. ts.net stays as the
+# fallback when the suffix can't be read.
 
-need docker/rootfs/etc/s6-overlay/scripts/init-config.sh "forwarder ts.net=100.100.100.100"
-need docker/rootfs/etc/s6-overlay/scripts/init-config.sh "discovery-dns 100.100.100.100"
-need docker/init-config.sh "forwarder ts.net=100.100.100.100"
-need tailwag.sh "forwarder ts.net=100.100.100.100"
+need tailwag.sh "printf 'forwarder %s=100.100.100.100\\n' \"\$TS_SUFFIX\""
+need tailwag.sh '"MagicDNSSuffix"'
 need tailwag.sh "discovery-dns 100.100.100.100"
+# Literal ${...} is the text in the shipped script, not a shell expansion.
+# shellcheck disable=SC2016
+need docker/rootfs/etc/s6-overlay/s6-rc.d/svc-nextdns/run '-forwarder "${FORWARDER}"'
+# shellcheck disable=SC2016
+need docker/rootfs/etc/s6-overlay/s6-rc.d/svc-nextdns/run 'FORWARDER="${suffix}=100.100.100.100"'
+need docker/rootfs/etc/s6-overlay/s6-rc.d/svc-nextdns/run '"MagicDNSSuffix"'
+need docker/rootfs/etc/s6-overlay/scripts/init-config.sh "discovery-dns 100.100.100.100"
+for gen in tailwag.sh docker/rootfs/etc/s6-overlay/scripts/init-config.sh; do
+    if grep -n '^forwarder ts\.net=' "${gen}"; then
+        die "${gen} forwards all of ts.net again; forward only the tailnet's own suffix"
+    fi
+done
+log "ok  MagicDNS forwarder is narrowed to the tailnet's own suffix"
 
 # --- Loop prevention: refuse tailnet DNS by default --------------------------
 
