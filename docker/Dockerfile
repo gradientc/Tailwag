@@ -20,12 +20,12 @@
 
 # --- Build args --------------------------------------------------------------
 
-ARG ALPINE_VERSION=3.24.2
+ARG ALPINE_VERSION=3.24.3
 # Multi-arch index digest of alpine:${ALPINE_VERSION} on Docker Hub. The tag
 # alone is mutable (Docker Official Images rebuild and re-push it), so the
 # digest is what makes two builds of the same commit use the same base. Bump
 # it together with ALPINE_VERSION; tests/verify-relay-invariants.sh checks it.
-ARG ALPINE_DIGEST=sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+ARG ALPINE_DIGEST=sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 ARG S6_OVERLAY_VERSION=3.2.3.2
 ARG TAILSCALE_VERSION=1.104.2
 ARG NEXTDNS_VERSION=1.47.3
