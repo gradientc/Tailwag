@@ -28,7 +28,7 @@ The problem: getting NextDNS to **bind only to your Tailscale address**, **survi
 | --- | --- |
 | **Install** | Adds the official NextDNS apt repo and installs the CLI |
 | **Configure** | Binds NextDNS to your Tailscale IPv4 (and IPv6) addresses only |
-| **Cache** | Enables a 20 MB in-memory cache with a 5 s client TTL for fast config propagation |
+| **Cache** | Enables a 20 MB in-memory cache with a 30 s client TTL; the relay cache is flushed on every profile change |
 | **Boot fix** | Installs a systemd drop-in so NextDNS waits for Tailscale before starting |
 | **Firewall** | Opens port 53 on `tailscale0` via UFW (if active) |
 | **Loop prevention** | Runs `tailscale set --accept-dns=false` on the relay itself, on every run (other node settings untouched) |
@@ -85,8 +85,8 @@ Defaults are set for home and small-office tailnets. Edit the variables at the t
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `CACHE_SIZE` | `20MB` | In-memory DNS cache size |
-| `MAX_TTL` | `5s` | Max TTL served to clients — low value means NextDNS config changes propagate fast |
+| `CACHE_SIZE` | `20MB` | In-memory DNS cache cap (same default as the container). Memory is used only by cached entries; 20 MB holds roughly 60-120k responses |
+| `MAX_TTL` | `30s` | Max TTL handed to clients. Bounds how long a client keeps an answer after a profile change; the relay cache itself is flushed by NextDNS on every profile update |
 | `ENABLE_IPV6` | `true` | Bind to Tailscale's IPv6 address as well (skipped automatically if the address is not on `tailscale0`, e.g. IPv6 disabled in the kernel) |
 
 One environment variable changes behaviour at run time:
@@ -113,9 +113,20 @@ sudo TAILWAG_KEEP_ACCEPT_DNS=1 ./tailwag.sh abc123
 ```bash
 nextdns status              # Relay health check
 nextdns log                 # Live query log (Ctrl-C to stop)
+nextdns cache-stats         # Cache hit / miss counters since the last restart
 cat /etc/nextdns.conf       # View current configuration
 journalctl -u nextdns -f    # Follow service logs
 ```
+
+### Cache metrics
+
+The host config enables `cache-metrics true`, so the relay keeps Ristretto's counters as well as the plain hit/miss pair. `nextdns cache-stats` shows the hit/miss pair. The richer counters (evictions, bytes added and evicted) are only exposed on NextDNS's control socket; NextDNS 1.47 has no CLI subcommand for them, so read them with one JSON line:
+
+```bash
+sudo python3 -c 'import socket;s=socket.socket(socket.AF_UNIX);s.connect("/var/run/nextdns.sock");s.sendall(b"{\"name\":\"cache-metrics\"}\n");print(s.recv(4096).decode())'
+```
+
+Hit ratio is `hit / (hit + miss)`. If `keys_evicted` is still 0 after a day of traffic, `CACHE_SIZE` is large enough and raising it changes nothing; if it keeps climbing, the working set is bigger than the cap. Counters reset when nextdns restarts.
 
 ## How it works
 
@@ -144,4 +155,4 @@ No. Tailwag forwards `.ts.net` queries to `100.100.100.100` (Tailscale's interna
 
 **What if I change my NextDNS config (e.g., allowlist a domain)?**
 
-The 5-second `MAX_TTL` means clients pick up changes almost immediately. No restart needed.
+NextDNS flushes the relay cache the moment the profile changes, and the 30-second `MAX_TTL` bounds how long a client keeps an older answer. No restart needed.

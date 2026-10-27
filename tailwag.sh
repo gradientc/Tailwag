@@ -48,14 +48,25 @@ readonly VERSION="0.3.0"
 # These defaults are good for home/small-office tailnets. Adjust if you know
 # what you're doing; the comments explain the trade-offs.
 
-# In-memory cache. 10-20 MB covers most tailnets without meaningful RAM cost.
+# In-memory cache cap. NextDNS charges each entry its response size in bytes
+# (typically 100-300 B) and uses memory only for entries actually cached, so a
+# generous cap costs nothing on a quiet relay. 20 MB holds roughly 60-120k
+# responses: the whole working set of a small office, so the hit rate is
+# bounded by TTL expiry, never by eviction. Same default as the container.
+# Check with `nextdns cache-stats` (hit/miss) and the cache-metrics socket
+# call documented in the README (keys_evicted should stay 0).
 CACHE_SIZE="20MB"
 
-# Max TTL served to clients. Does NOT affect the relay's own upstream cache.
-# 5s forces frequent re-queries so NextDNS config changes (e.g., whitelisting
-# a false positive) propagate to clients almost immediately.
+# Max TTL handed to clients. This caps only the TTL in the answers sent to
+# clients. The relay's own cache keeps the true upstream TTL, and NextDNS
+# flushes that cache automatically when the profile is updated (see
+# `nextdns run -h`, -cache-size). So this value is exactly how long a client
+# may keep an answer that a profile change has since invalidated. 30s keeps
+# allow/block edits near-immediate while cutting the re-queries that cross the
+# tunnel to a sixth of the old 5s default (phones on battery notice). Raise to
+# 60s for fewer still; browsers cap their own DNS cache near 60s anyway.
 # Reference: https://github.com/nextdns/nextdns/wiki/Cache-Configuration
-MAX_TTL="5s"
+MAX_TTL="30s"
 
 # Bind to the Tailscale IPv6 address in addition to IPv4.
 # Both are always assigned by Tailscale; dual-stack is free redundancy.
@@ -216,6 +227,12 @@ fi
 
 log "Writing /etc/nextdns.conf ..."
 
+# cache-metrics: keeps Ristretto hit/miss/eviction counters so the cache cap can
+# be sized from evidence (`nextdns cache-stats`, and the control-socket call in
+# the README for keys_evicted). NextDNS documents the overhead as "small CPU
+# and memory". Host only: the container has no python or socket-capable nc to
+# read the richer counters, so it is not worth the overhead there.
+
 systemctl stop nextdns 2>/dev/null || true
 
 {
@@ -232,6 +249,7 @@ mdns disabled
 auto-activate false
 bogus-priv true
 use-hosts true
+cache-metrics true
 STATIC
 } > /etc/nextdns.conf
 
@@ -529,6 +547,7 @@ $( [[ -n "$TS_IPV6" ]] && printf '    IPv6  %s\n' "$TS_IPV6" )
   ---------------
   nextdns status                Check relay health
   nextdns log                   Live query log (Ctrl-C to stop)
+  nextdns cache-stats           Cache hit / miss counters
   cat /etc/nextdns.conf         View configuration
   journalctl -u nextdns -f      Follow service logs
 

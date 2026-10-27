@@ -116,7 +116,15 @@ LABEL maintainer="Tailwag" \
 #   ca-certificates — TLS verification for DoH upstream and Tailscale coordination
 #   bash      — s6-overlay scripts (minimal Alpine bash, ~1MB)
 #   bind-tools — dig for the tailwag-health HEALTHCHECK (~2MB)
-RUN apk add --no-cache \
+#
+# `apk upgrade` first: `apk add` only touches the packages named below (and
+# what they newly need), so musl, busybox, libcrypto/libssl and the rest of
+# the alpine base image would stay at whatever version the base image tag was
+# built with. Upgrading them at build time picks up Alpine security fixes that
+# landed after that base image. Combined with the weekly no-cache rebuild in
+# .github/workflows/docker.yml, :latest does not sit on stale libc / openssl.
+RUN apk upgrade --no-cache \
+    && apk add --no-cache \
     iptables \
     ip6tables \
     iptables-legacy \
@@ -176,8 +184,11 @@ RUN mkdir -p /var/lib/tailscale /var/run/tailscale /run/nextdns
 #                       iptables; the image forces iptables-legacy (above)
 #
 # Optional — NextDNS:
-#   NEXTDNS_CACHE_SIZE  In-memory cache size (default: 10MB)
-#   NEXTDNS_MAX_TTL     Max TTL served to clients (default: 5s)
+#   NEXTDNS_CACHE_SIZE  In-memory cache cap (default: 20MB; memory is used only
+#                       by entries actually cached, ~60-120k responses at 20MB)
+#   NEXTDNS_MAX_TTL     Max TTL handed to clients (default: 30s). Caps only
+#                       client TTLs; the relay cache keeps the true TTL and is
+#                       flushed by NextDNS whenever the profile changes
 #   NEXTDNS_LISTEN      Listen address (default: :53)
 #   NEXTDNS_EXTRA_ARGS  Extra args for nextdns run
 #
@@ -189,8 +200,8 @@ ENV TS_HOSTNAME="tailwag" \
     TS_ACCEPT_DNS="false" \
     TS_USERSPACE="false" \
     TS_STATE_DIR="/var/lib/tailscale" \
-    NEXTDNS_CACHE_SIZE="10MB" \
-    NEXTDNS_MAX_TTL="5s" \
+    NEXTDNS_CACHE_SIZE="20MB" \
+    NEXTDNS_MAX_TTL="30s" \
     NEXTDNS_LISTEN=":53"
 
 # s6-overlay behaviour: if bring-up fails (a oneshot such as init-config or
