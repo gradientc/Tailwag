@@ -151,7 +151,7 @@ Yes, and you should. Run Tailwag on two servers, add both IPs as nameservers in 
 
 **Will this break MagicDNS?**
 
-No. Tailwag forwards `.ts.net` queries to `100.100.100.100` (Tailscale's internal resolver), so MagicDNS hostnames keep working.
+No. Tailwag forwards your tailnet's own suffix (`tailXXXX.ts.net`, read from `tailscale status --json`) to `100.100.100.100` (Tailscale's internal resolver), so MagicDNS hostnames keep working. Other `*.ts.net` names, such as another tailnet's public Funnel URL, go to NextDNS like any public name. Re-run the script if you rename your tailnet.
 
 **What if I change my NextDNS config (e.g., allowlist a domain)?**
 

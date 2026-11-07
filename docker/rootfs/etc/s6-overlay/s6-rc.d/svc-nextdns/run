@@ -16,7 +16,27 @@ if [[ ! -f /etc/nextdns.conf ]]; then
     exit 1
 fi
 
+# MagicDNS forwarder: this tailnet's suffix only (tailXXXX.ts.net).
+# Forwarding all of ts.net to 100.100.100.100 broke other tailnets' public
+# Funnel hostnames: our quad-100 only knows our own tailnet, has no upstream
+# with accept-dns=false, and answers SERVFAIL, which NextDNS passes straight
+# to the client (first matching forwarder wins; no fallback on rcode).
+# The suffix only exists once tailscale-up has finished, so it is read here,
+# on every (re)start, and passed as a flag; init-config writes no forwarder.
+# Command-line forwarders are matched before config-file ones.
+TS="/usr/local/bin/tailscale"
+SOCKET="/var/run/tailscale/tailscaled.sock"
+suffix="$("${TS}" --socket="${SOCKET}" status --json --peers=false 2>/dev/null \
+    | sed -n 's/^[[:space:]]*"MagicDNSSuffix":[[:space:]]*"\([^"]*\)".*/\1/p' \
+    | head -n1 || true)"
+if [[ ! "${suffix}" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]]; then
+    log "WARN: could not read the tailnet's MagicDNS suffix (got '${suffix}'). Forwarding all of ts.net; other tailnets' Funnel names will fail."
+    suffix="ts.net"
+fi
+FORWARDER="${suffix}=100.100.100.100"
+
 log "Starting NextDNS relay (profile=$(grep '^profile ' /etc/nextdns.conf | awk '{print $2}'))"
 log "Cache: $(grep '^cache-size ' /etc/nextdns.conf | awk '{print $2}'), TTL cap: $(grep '^max-ttl ' /etc/nextdns.conf | awk '{print $2}')"
+log "MagicDNS forwarder: ${FORWARDER}"
 
-exec /usr/local/bin/nextdns run -config-file /etc/nextdns.conf
+exec /usr/local/bin/nextdns run -config-file /etc/nextdns.conf -forwarder "${FORWARDER}"
