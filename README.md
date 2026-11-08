@@ -2,7 +2,7 @@
   <a href="https://github.com/gradientc/Tailwag/releases">
     <img src="https://img.shields.io/github/v/release/gradientc/Tailwag?label=version" alt="Version">
   </a>
-  <img src="https://img.shields.io/badge/platform-Debian%20%2F%20Ubuntu-orange" alt="Platform">
+  <img src="https://img.shields.io/badge/platform-Debian%20%7C%20Ubuntu%20%7C%20Alpine%20%7C%20RHEL-orange" alt="Platform">
   <a href="https://github.com/gradientc/Tailwag/pkgs/container/tailwag">
     <img src="https://img.shields.io/badge/ghcr.io-gradientc%2Ftailwag-blue?logo=github" alt="GHCR">
   </a>
@@ -12,7 +12,7 @@
 
 **A caching DNS relay for Tailscale networks. One script. Full stack.**
 
-Tailwag turns any Debian/Ubuntu machine on your tailnet into a [NextDNS](https://nextdns.io)-powered DNS relay — with caching, dual-stack IPv4/IPv6, firewall rules, and a systemd boot fix, in under a minute.
+Tailwag turns a Linux machine on your tailnet (Debian, Ubuntu, Alpine, the Fedora/RHEL family and their derivatives) into a [NextDNS](https://nextdns.io)-powered DNS relay, with caching, dual-stack IPv4/IPv6, firewall rules, and a boot-ordering fix for systemd or OpenRC, in under a minute.
 
 ---
 
@@ -26,11 +26,11 @@ The problem: getting NextDNS to **bind only to your Tailscale address**, **survi
 
 | Step | Detail |
 | --- | --- |
-| **Install** | Adds the official NextDNS apt repo and installs the CLI |
+| **Install** | Adds the official NextDNS repository for your package manager (apt, apk or dnf) and installs the CLI |
 | **Configure** | Binds NextDNS to your Tailscale IPv4 (and IPv6) addresses only |
 | **Cache** | Enables a 20 MB in-memory cache with a 30 s client TTL; the relay cache is flushed on every profile change |
-| **Boot fix** | Installs a systemd drop-in so NextDNS waits for Tailscale before starting |
-| **Firewall** | Opens port 53 on `tailscale0` via UFW (if active) |
+| **Boot fix** | Installs a boot gate for your service manager (a systemd drop-in, or an OpenRC gate service) so NextDNS waits for Tailscale before starting |
+| **Firewall** | Opens port 53 on `tailscale0` via UFW, or in its firewalld zone, whichever is active |
 | **Loop prevention** | Runs `tailscale set --accept-dns=false` on the relay itself, on every run (other node settings untouched) |
 
 Every run produces the same configuration state. Safe to re-run.
@@ -39,10 +39,20 @@ Every run produces the same configuration state. Safe to re-run.
 
 > Docker image: [`ghcr.io/gradientc/tailwag`](https://github.com/gradientc/Tailwag/pkgs/container/tailwag) · docs in [docker/README.md](docker/README.md)
 
-- **OS:** Debian or Ubuntu (uses `apt`)
+- **OS:** Linux with **systemd or OpenRC** as the service manager, and a package manager NextDNS publishes for (see the table). bash 4 or newer.
 - **Tailscale:** Installed and authenticated (`tailscale status` must work)
 - **NextDNS account:** [Get a free profile ID](https://my.nextdns.io) → Setup → Endpoints
 - **Root access**
+
+| Package path | Distributions | NextDNS repository | Service manager |
+| --- | --- | --- | --- |
+| `apt` | Debian 12/13, Ubuntu 22.04+, Raspberry Pi OS, Mint, Pop!_OS, Devuan | `repo.nextdns.io/deb` | systemd; OpenRC on Devuan (`apt install openrc`) |
+| `apk` | Alpine 3.x | `repo.nextdns.io/apk` | OpenRC |
+| `dnf` | Fedora, Rocky, Alma, CentOS Stream, RHEL 9+ | `repo.nextdns.io` (rpm) | systemd |
+
+Each path does what [NextDNS's own installer](https://github.com/nextdns/nextdns/blob/master/install.sh) does for that package manager, so `nextdns` keeps updating with your normal package upgrades. Debian and Ubuntu on systemd is the path the maintainer runs in production; the Alpine/OpenRC and RHEL-family paths were added in this release and verified against command shims rather than on live hosts so far, so please report what you see. Devuan's default sysvinit is not supported (there is no place to hook a pre-start wait); install OpenRC and the script treats it like Alpine.
+
+**Any other distribution** (Arch, Void, Gentoo, openSUSE, NixOS): install the `nextdns` CLI yourself (your package manager, the [NextDNS wiki](https://github.com/nextdns/nextdns/wiki), or `sh -c "$(curl -sL https://nextdns.io/install)"`), run `nextdns install` so your service manager knows it, then run Tailwag. It skips the install step when `nextdns` is already present and only needs systemd or OpenRC for the boot gate.
 
 ## Quick start
 
@@ -73,6 +83,19 @@ sudo bash tailwag.sh abc123
 
 `SHA256SUMS` comes from the same release, so it catches corruption, not a tampered release; the attestation is the check that does. To pin a version, replace `latest/download` with `download/<tag>` (e.g. `download/0.3.0`). The development version is at `https://raw.githubusercontent.com/gradientc/Tailwag/main/tailwag.sh`.
 
+**Alpine (small VPS, 128-512 MB)**
+
+Alpine has no `sudo` by default and its `tailscale` package puts the OpenRC service in a subpackage. As root:
+
+```sh
+apk add bash curl tailscale tailscale-openrc
+rc-update add tailscale default && rc-service tailscale start
+tailscale up
+curl -fsSL https://github.com/gradientc/Tailwag/releases/latest/download/tailwag.sh | bash -s -- abc123
+```
+
+Tailwag adds NextDNS's apk repository (`repo.nextdns.io/apk`, signed with the key it installs to `/etc/apk/keys/nextdns.pub`), installs `nextdns` and `bind-tools`, and installs the OpenRC boot gate: `/etc/init.d/tailwag-gate` waits for the Tailscale addresses, and `/etc/conf.d/nextdns` declares `rc_need="tailwag-gate"` so `nextdns` cannot start before it. On a host with little RAM, set `TAILWAG_CACHE_SIZE=4MB` (below); the cache is a cap, not a reservation, and `tailscaled` is the larger of the two processes whatever the cache size.
+
 Then, in the [Tailscale admin console](https://login.tailscale.com/admin/dns):
 
 1. Add the relay's Tailscale IP as a **Custom Nameserver**
@@ -81,15 +104,15 @@ Then, in the [Tailscale admin console](https://login.tailscale.com/admin/dns):
 
 ## Configuration
 
-Defaults are set for home and small-office tailnets. Edit the variables at the top of the script to tune:
+Defaults are set for home and small-office tailnets. Each tuning variable at the top of the script can be overridden for one run with the environment variable next to it, which is the way to tune a `curl | bash` install:
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `CACHE_SIZE` | `20MB` | In-memory DNS cache cap (same default as the container). Memory is used only by cached entries; 20 MB holds roughly 60-120k responses |
-| `MAX_TTL` | `30s` | Max TTL handed to clients. Bounds how long a client keeps an answer after a profile change; the relay cache itself is flushed by NextDNS on every profile update |
-| `ENABLE_IPV6` | `true` | Bind to Tailscale's IPv6 address as well (skipped automatically if the address is not on `tailscale0`, e.g. IPv6 disabled in the kernel) |
+| Variable | Environment override | Default | Purpose |
+| --- | --- | --- | --- |
+| `CACHE_SIZE` | `TAILWAG_CACHE_SIZE` | `20MB` | In-memory DNS cache cap (same default as the container). Memory is used only by cached entries; 20 MB holds roughly 60-120k responses, 4 MB about 12-24k |
+| `MAX_TTL` | `TAILWAG_MAX_TTL` | `30s` | Max TTL handed to clients. Bounds how long a client keeps an answer after a profile change; the relay cache itself is flushed by NextDNS on every profile update |
+| `ENABLE_IPV6` | `TAILWAG_ENABLE_IPV6` | `true` | Bind to Tailscale's IPv6 address as well (skipped automatically if the address is not on `tailscale0`, e.g. IPv6 disabled in the kernel) |
 
-One environment variable changes behaviour at run time:
+Invalid values are rejected before anything is written. One more environment variable changes behaviour at run time:
 
 | Variable | Effect |
 | --- | --- |
@@ -97,6 +120,7 @@ One environment variable changes behaviour at run time:
 
 ```bash
 sudo TAILWAG_KEEP_ACCEPT_DNS=1 ./tailwag.sh abc123
+sudo TAILWAG_CACHE_SIZE=4MB TAILWAG_MAX_TTL=60s ./tailwag.sh abc123
 ```
 
 ## Exit codes
@@ -115,7 +139,8 @@ nextdns status              # Relay health check
 nextdns log                 # Live query log (Ctrl-C to stop)
 nextdns cache-stats         # Cache hit / miss counters since the last restart
 cat /etc/nextdns.conf       # View current configuration
-journalctl -u nextdns -f    # Follow service logs
+journalctl -u nextdns -f    # Follow service logs (systemd)
+rc-service nextdns status   # Service state (OpenRC); the gate: rc-service tailwag-gate status
 ```
 
 ### Cache metrics
@@ -141,7 +166,7 @@ Hit ratio is `hit / (hit + miss)`. If `keys_evicted` is still 0 after a day of t
 1. Tailscale clients send DNS queries to the relay's Tailscale IP.
 2. NextDNS CLI resolves upstream via DoH, applies your NextDNS profile (ad-blocking, security, allowlists).
 3. Responses are cached locally; subsequent queries for the same domain are served instantly.
-4. The systemd drop-in ensures the relay survives reboots: a pre-start helper (`/usr/local/libexec/tailwag/wait-listen-addrs`) blocks until every listen address in `/etc/nextdns.conf` is on `tailscale0`, for up to 120 s.
+4. The boot gate ensures the relay survives reboots: a helper (`/usr/local/libexec/tailwag/wait-listen-addrs`) blocks until every listen address in `/etc/nextdns.conf` is on `tailscale0`, for up to 120 s. On systemd it runs as `ExecStartPre=` from a drop-in; on OpenRC it is the `tailwag-gate` service that `nextdns` needs (`rc_need` in `/etc/conf.d/nextdns`). Both survive `nextdns` package upgrades, which rewrite the service file itself.
 
 ## FAQ
 
