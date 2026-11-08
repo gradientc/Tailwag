@@ -179,6 +179,23 @@ need tailwag.sh "ExecStartPre"
 need tailwag.sh "wait-listen-addrs"
 need scripts/wait-listen-addrs "TAILWAG_WAIT_SECS"
 
+# --- Host: one gate per service manager, both fed by the same helper --------
+# systemd gets the drop-in above; OpenRC (Alpine, Devuan with openrc) gets a
+# tailwag-gate service that nextdns needs via /etc/conf.d/nextdns. The
+# helper is installed once and both gates call it, so the wait logic cannot
+# fork. The NextDNS apk repository and its key are what make the Alpine path
+# an official install rather than a hand-copied binary.
+
+need tailwag.sh '/etc/init.d/tailwag-gate'
+need tailwag.sh 'rc_need="tailwag-gate"'
+need tailwag.sh 'https://repo.nextdns.io/apk'
+need tailwag.sh '/etc/apk/keys/nextdns.pub'
+need tailwag.sh 'https://repo.nextdns.io/nextdns.repo'
+need tailwag.sh 'firewall-cmd'
+if grep -qE '^[[:space:]]*start_pre\(\)' tailwag.sh; then
+    die "tailwag.sh defines start_pre() for nextdns; the OpenRC gate must be its own service (nextdns install rewrites /etc/init.d/nextdns)"
+fi
+
 # --- Every workflow pins a top-level token scope ------------------------------
 # Without one, GITHUB_TOKEN gets the repository default, which is read-write on
 # older repos (CodeQL actions/missing-workflow-permissions, CWE-275). Jobs may

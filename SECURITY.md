@@ -14,15 +14,17 @@ Only the latest release is actively maintained and receives security fixes.
 
 ## Known Limitations
 
-### `tailwag.sh` — NextDNS GPG key fetched without checksum
+### `tailwag.sh`: NextDNS repository keys fetched without a fingerprint pin
 
-During installation, `tailwag.sh` fetches the NextDNS apt signing key directly from `repo.nextdns.io` and pipes it into `gpg`:
+On first install, `tailwag.sh` fetches the NextDNS repository signing key directly from `repo.nextdns.io` for the package manager in use, exactly as NextDNS's own installer does:
 
 ```bash
-curl -fsSL https://repo.nextdns.io/nextdns.gpg | gpg --dearmor ...
+curl -fsSL https://repo.nextdns.io/nextdns.gpg | gpg --dearmor ...   # apt
+curl -fsSL https://repo.nextdns.io/nextdns.pub -o /etc/apk/keys/nextdns.pub   # apk
+curl -fsSL https://repo.nextdns.io/nextdns.repo -o /etc/yum.repos.d/nextdns.repo   # dnf (the repo file names its gpgkey URL)
 ```
 
-This means a compromised `repo.nextdns.io` or a network-level MITM could substitute a malicious key. This is a standard limitation of the apt repository bootstrap pattern (shared by many popular tools). For high-security environments, download the GPG key out-of-band, verify its fingerprint against a trusted source, and install it manually before running the script.
+This means a compromised `repo.nextdns.io` or a network-level MITM at that moment could substitute a malicious key. This is a standard limitation of the repository bootstrap pattern (shared by many popular tools); it applies once, and every later package update is then verified against the installed key. For high-security environments, download the key out-of-band, verify its fingerprint against a trusted source, install it and the `nextdns` package manually, and run `nextdns install`; the script skips its whole install step, key fetch included, when `nextdns` is already present.
 
 ### `curl | bash` install pattern
 

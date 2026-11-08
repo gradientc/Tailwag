@@ -2,14 +2,14 @@
 
 > Guidance for AI coding agents and human contributors working on Tailwag.
 
-**Tailwag** turns any Debian/Ubuntu machine (or Docker host) on your Tailscale tailnet into a [NextDNS](https://nextdns.io)-powered caching DNS relay — with proper boot ordering, dual-stack, firewall rules, and loop prevention.
+**Tailwag** turns a Linux host with systemd or OpenRC (Debian, Ubuntu, Alpine, the Fedora/RHEL family and derivatives) or a Docker host on your Tailscale tailnet into a [NextDNS](https://nextdns.io)-powered caching DNS relay — with proper boot ordering, dual-stack, firewall rules, and loop prevention.
 
 **Core philosophy (read this first):**  
 Every run must produce a *known-good, identical* state. The project exists because "just point Tailscale DNS at NextDNS" is full of race conditions, firewall quirks, and reboot surprises. All code comments that look overly long exist because someone (or their users) hit the exact failure mode they describe.
 
 There are two supported delivery mechanisms that share the same principles:
 
-- `tailwag.sh` — single-file Bash installer for bare Debian/Ubuntu hosts (apt + systemd)
+- `tailwag.sh` — single-file Bash installer for bare hosts: NextDNS from its official apt, apk or dnf repository, boot gate for systemd (drop-in) or OpenRC (`tailwag-gate` service + `rc_need` in `/etc/conf.d/nextdns`), firewall rules for UFW or firewalld
 - `docker/` — self-contained Alpine + s6-overlay container (Tailscale + NextDNS, no host systemd required)
 
 ---
@@ -18,8 +18,8 @@ There are two supported delivery mechanisms that share the same principles:
 
 | Goal | Files you will almost certainly touch | Special warnings |
 |------|---------------------------------------|------------------|
-| Add / change a config variable (cache size, TTL, listen addr, etc.) | `docker/rootfs/etc/s6-overlay/scripts/init-config.sh`, `docker/.env.example`, `docker/Dockerfile` (ENV), `docker/docker-compose.yml`, `docker/fly.toml`, and the corresponding section in `tailwag.sh` + its README table | Update both the container *and* host paths; keep defaults consistent |
-| Modify boot / race-condition logic | `tailwag.sh` (systemd drop-in), `docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh`, the s6-rc.d dependency files | You are touching the heart of the project. Re-read the 90-second poll and the `scripts/wait-listen-addrs` boot gate before writing code |
+| Add / change a config variable (cache size, TTL, listen addr, etc.) | `docker/rootfs/etc/s6-overlay/scripts/init-config.sh`, `docker/.env.example`, `docker/Dockerfile` (ENV), `docker/docker-compose.yml`, `docker/fly.toml`, and the corresponding section in `tailwag.sh` (the `TAILWAG_*` env override and its validation) + its README table | Update both the container *and* host paths; keep defaults consistent |
+| Modify boot / race-condition logic | `tailwag.sh` (systemd drop-in **and** the OpenRC `tailwag-gate` heredoc, both fed by the `<<'WAIT'` helper), `docker/rootfs/etc/s6-overlay/scripts/tailscale-up.sh`, the s6-rc.d dependency files | You are touching the heart of the project. Re-read the 90-second poll and the `scripts/wait-listen-addrs` boot gate before writing code. The host wait logic lives in the helper only; the two gates just call it |
 | Change Tailscale, NextDNS or Alpine version | `docker/Dockerfile` (the four `ARG` version lines, `ALPINE_DIGEST`, download stages) | Keep the SHA256 verification pattern for all three downloads: s6 and Tailscale (`.sha256` sidecars), NextDNS (`checksums.txt`) |
 | Add a new shell script | The new file + both duplication locations if applicable + `.github/workflows/shellcheck.yml` `additional_files` | See "Duplication" section below |
 | Improve firewall / exit-node behavior | `docker/Dockerfile` (iptables-legacy symlinks), `docker/rootfs/etc/s6-overlay/s6-rc.d/svc-tailscaled/run` (TS_DEBUG_FIREWALL_MODE) | This is the #1 source of "it works on my machine but not in the container" bugs |
@@ -37,7 +37,7 @@ There are two supported delivery mechanisms that share the same principles:
 
 ```
 .
-├── tailwag.sh                 # Host installer. Idempotent, strict mode, self-contained for curl|bash
+├── tailwag.sh                 # Host installer. Idempotent, strict mode, self-contained for curl|bash; apt/apk/dnf, systemd/OpenRC
 ├── scripts/
 │   └── wait-listen-addrs      # Host boot gate (ExecStartPre). DUPLICATE of the heredoc inside tailwag.sh
 ├── tests/
@@ -114,14 +114,17 @@ CI runs it on every push and PR (`.github/workflows/checks.yml`). It fails if a 
 
 ### Testing the host script
 
-Requires a Debian/Ubuntu machine with Tailscale already up and a NextDNS profile ID.
+Requires a machine with Tailscale already up and a NextDNS profile ID. Debian/Ubuntu (systemd, apt) is the path run in production; Alpine (OpenRC, apk) and the Fedora/RHEL family (systemd, dnf, firewalld) follow NextDNS's installer step for step and have so far been exercised only against command shims (fake `apk`, `rc-service`, `firewall-cmd` and so on, with a fake PID 1 in a private PID and mount namespace), not on live hosts. Treat a report from a real Alpine or Rocky host as the test that is still owed.
 
 ```bash
 sudo ./tailwag.sh abc123
 # Re-run to prove idempotency
 sudo ./tailwag.sh abc123
-journalctl -u nextdns -f
+journalctl -u nextdns -f          # systemd
+rc-service tailwag-gate status    # OpenRC: the gate, then rc-service nextdns status
 ```
+
+On OpenRC, `rc-service nextdns start` must print the gate starting first, and `rc-update show` must list `nextdns` in `default` (the gate is started on demand through `rc_need` and need not be in a runlevel).
 
 ### Testing the Docker path (recommended for most changes)
 
@@ -201,7 +204,7 @@ Fly.io deployments are fully supported (see `fly.toml` and the docker README).
 
 1. **Tailscale IP readiness**
    - The container version waits in `tailscale-up.sh` after `tailscale up` returns.
-   - The host version uses a systemd `ExecStartPre=/usr/local/libexec/tailwag/wait-listen-addrs` gate in the drop-in. It waits until **every** `listen` address in `/etc/nextdns.conf` is on the Tailscale interface (exact match, IPv4 and IPv6, 120 s deadline, `TimeoutStartSec=150` above it). The config is the single source of truth; never bake an address into the drop-in again.
+   - The host version runs `/usr/local/libexec/tailwag/wait-listen-addrs` before nextdns starts: as `ExecStartPre=` in the systemd drop-in, or as the `start()` of the OpenRC `tailwag-gate` service that `/etc/conf.d/nextdns` declares in `rc_need`. It waits until **every** `listen` address in `/etc/nextdns.conf` is on the Tailscale interface (exact match, IPv4 and IPv6, 120 s deadline, `TimeoutStartSec=150` above it on systemd). The config is the single source of truth; never bake an address into a service file again. Neither gate edits NextDNS's own service file: every package upgrade re-runs `nextdns install`, which rewrites it (`service.go` upstream), while the drop-in directory and `/etc/conf.d/nextdns` survive.
    - Both poll for an address matching `^100\.` (IPv4) or the `fd7a:115c:...` prefix (IPv6).
 
 2. **iptables backend compatibility**
@@ -222,7 +225,7 @@ Fly.io deployments are fully supported (see `fly.toml` and the docker README).
 
 See the full [SECURITY.md](/SECURITY.md).
 
-- GPG key for the NextDNS apt repo is fetched over HTTPS and dearmored (known limitation documented).
+- The NextDNS repository key is fetched over HTTPS on first install (apt: dearmored GPG key; apk: `/etc/apk/keys/nextdns.pub`; dnf: the `.repo` file names its gpgkey), with no fingerprint pin (known limitation documented).
 - s6-overlay and NextDNS binaries are SHA256-checked against upstream checksum files.
 - Tailscale Linux tarballs are SHA256-checked against the `.tgz.sha256` sidecars published on `pkgs.tailscale.com` (raw hex; verified before extract).
 - The `curl ... | sudo bash` one-liner is convenient but carries the usual transport risks — the script itself validates inputs aggressively.
@@ -233,7 +236,7 @@ When touching any download or key-handling code, preserve or strengthen the exis
 
 ## Dependency & Supply-Chain Update Policy
 
-The container image (the only thing that ships to production) is built from four manually-pinned versions defined as build args at the top of the Dockerfile. The host `tailwag.sh` has **no** CLI pins (it uses the system Tailscale + the official NextDNS apt repository).
+The container image (the only thing that ships to production) is built from four manually-pinned versions defined as build args at the top of the Dockerfile. The host `tailwag.sh` has **no** CLI pins (it uses the system Tailscale + the official NextDNS apt, apk or rpm repository).
 
 **Current pins (source of truth)**
 
@@ -312,6 +315,8 @@ When you touch any of the four ARG lines, you **must** also update this table an
 
 - Assuming `tailscale up` returning means the `100.` address is immediately usable on the interface — it isn't. Always poll.
 - Forgetting that modern Alpine/Ubuntu default to nftables while Tailscale's firewall code still expects iptables-legacy inside the container.
+- Hooking the host boot gate into `/etc/systemd/system/nextdns.service` or `/etc/init.d/nextdns` directly: both are rewritten by `nextdns install` on every package upgrade. Use the drop-in and `/etc/conf.d/nextdns`.
+- Detecting OpenRC differently from `nextdns install` (PID 1 named `init`, `/sbin/openrc-run`, runlevel `default`): the gate would then attach to a service the package never created.
 - Starting NextDNS before the Tailscale interface has an address (the exact bug the whole project was written to solve).
 - Editing only one of the duplicated script copies.
 - Adding a new environment variable but forgetting to document it in `.env.example` and the README tables.
