@@ -25,9 +25,9 @@ ARG ALPINE_VERSION=3.24.4
 # alone is mutable (Docker Official Images rebuild and re-push it), so the
 # digest is what makes two builds of the same commit use the same base. Bump
 # it together with ALPINE_VERSION; tests/verify-relay-invariants.sh checks it.
-ARG ALPINE_DIGEST=sha256:93b41ef40b1677fce8fcc64ff4af09daddfacf5040afde618bc46c1e2d1cc7d4
+ARG ALPINE_DIGEST=sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 ARG S6_OVERLAY_VERSION=3.2.3.2
-ARG TAILSCALE_VERSION=1.104.5
+ARG TAILSCALE_VERSION=1.104.7
 ARG NEXTDNS_VERSION=1.49.0
 
 # =============================================================================
