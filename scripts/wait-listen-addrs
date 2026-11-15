@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
 # ==============================================================================
-#  wait-listen-addrs  ·  Tailwag host boot gate (systemd ExecStartPre)
+#  wait-listen-addrs  ·  Tailwag host boot gate (systemd and OpenRC)
 # ==============================================================================
 #
 #  Installed by tailwag.sh to /usr/local/libexec/tailwag/wait-listen-addrs and
-#  run as ExecStartPre= of nextdns.service. Blocks until every specific
+#  run as ExecStartPre= of nextdns.service (systemd) or as start() of the
+#  tailwag-gate service that nextdns needs (OpenRC). Blocks until every specific
 #  `listen` address in /etc/nextdns.conf is assigned to the Tailscale
 #  interface, so nextdns never tries to bind() an address that is not there
 #  yet (the boot race the whole project exists to fix).
@@ -24,8 +25,9 @@
 #
 #  Usage:   wait-listen-addrs [interface]      (default: tailscale0)
 #  Env:     TAILWAG_WAIT_SECS   deadline in seconds (default 120). If you
-#                               raise it, raise TimeoutStartSec in the
-#                               drop-in too, or systemd kills us first.
+#                               raise it on systemd, raise TimeoutStartSec
+#                               in the drop-in too, or systemd kills us
+#                               first. The OpenRC gate sets its own.
 #           TAILWAG_CONF        config to read (default /etc/nextdns.conf)
 #  Exit:    0 all addresses present (or none to wait for), 1 timed out.
 #
