@@ -13,7 +13,8 @@
 #    - Installs a boot gate for your init system (a systemd drop-in, or an
 #      OpenRC gate service) so NextDNS waits for the Tailscale addresses on
 #      every boot
-#    - Sets up firewall rules if UFW or firewalld is active
+#    - Sets up firewall rules if UFW or firewalld is active (firewalld:
+#      port 53 from the tailnet's address ranges only)
 #    - Prevents DNS loops on the relay server itself: applies
 #      `tailscale set --accept-dns=false` on every run, interactive or not
 #      (opt out with TAILWAG_KEEP_ACCEPT_DNS=1; other node settings are
@@ -26,13 +27,15 @@
 #    sudo ./tailwag.sh <nextdns_profile_id>
 #    sudo TAILWAG_KEEP_ACCEPT_DNS=1 ./tailwag.sh <id>   # skip the loop guard
 #    sudo TAILWAG_CACHE_SIZE=4MB ./tailwag.sh <id>      # small-RAM host
+#    curl -fsSL <release>/tailwag.sh | sudo TAILWAG_CACHE_SIZE=4MB bash -s -- <id>
 #
 #  Exit codes:
 #    0  Installed and healthy
 #    1  Not installed (fatal error before or during setup)
 #    2  Usage error (no profile and no prompt possible, invalid profile)
 #    3  Installed but needs attention (loop guard not applied, DNS probe
-#       failed). NextDNS is running; read the WARN lines.
+#       failed, firewall rule not applied, nextdns not enabled at boot).
+#       NextDNS is running; read the WARN lines.
 #
 #  After running on each relay:
 #    1. Add the Tailscale IP(s) as Custom Nameservers in your tailnet DNS
@@ -160,10 +163,17 @@ fi
 # Validate the tuning overrides before anything is written: an invalid
 # cache-size or max-ttl is only noticed by nextdns at start, after the old
 # config has been replaced, and the failure would read as a boot problem.
-[[ "$CACHE_SIZE" =~ ^[0-9]+([KMG]i?)?B?$ ]] \
-    || die "TAILWAG_CACHE_SIZE must be a size such as 20MB or 4MB (got '$CACHE_SIZE')"
-[[ "$MAX_TTL" =~ ^([0-9]+(ms|s|m|h))+$ ]] \
-    || die "TAILWAG_MAX_TTL must be a duration such as 30s or 1m (got '$MAX_TTL')"
+#
+# cache-size: nextdns reads it with config.ParseBytes (config/util.go
+# upstream): a number, decimals allowed, then an optional unit b, k/kb, m/mb
+# or g/gb in any case, all powers of 1024. IEC spellings (KiB, MiB, Mi) are
+# "unknown unit name" to nextdns, so they are refused here, not at boot.
+# max-ttl: 0 or anything under a second means "no cap" to nextdns, the
+# opposite of what this setting is for, so require at least 1s.
+[[ "$CACHE_SIZE" =~ ^[0-9]+(\.[0-9]+)?([KkMmGg][Bb]?|[Bb])?$ ]] \
+    || die "TAILWAG_CACHE_SIZE must be a size nextdns accepts, such as 20MB, 4MB or 512kB (k, M and G are powers of 1024; KiB/MiB spellings are not accepted; got '$CACHE_SIZE')"
+[[ "$MAX_TTL" =~ ^([0-9]+[smh])+$ && ! "$MAX_TTL" =~ ^(0+[smh])+$ ]] \
+    || die "TAILWAG_MAX_TTL must be a duration of at least 1s, such as 30s or 1m (got '$MAX_TTL')"
 [[ "$ENABLE_IPV6" == true || "$ENABLE_IPV6" == false ]] \
     || die "TAILWAG_ENABLE_IPV6 must be true or false (got '$ENABLE_IPV6')"
 
@@ -184,13 +194,33 @@ fi
 # package created. A mismatch (e.g. running in single-user mode) would gate
 # a service that does not exist.
 
-OS_ID="" OS_LIKE=""
-if [[ -r /etc/os-release ]]; then
-    # shellcheck disable=SC1091
-    OS_ID=$(. /etc/os-release 2>/dev/null && printf '%s' "${ID:-}")
-    # shellcheck disable=SC1091
-    OS_LIKE=$(. /etc/os-release 2>/dev/null && printf '%s' "${ID_LIKE:-}")
-fi
+# os-release is parsed, never sourced. It sets VERSION=, which is readonly
+# in this script, and sourcing it even inside $( ) fails on that line
+# ("VERSION: readonly variable"); under set -e that ended the run silently,
+# exit 1, on every Debian, Ubuntu and Fedora host. Alpine's file has no
+# VERSION= line, which is how it went unnoticed. ID and ID_LIKE are plain
+# lowercase words (os-release(5)), so dropping one layer of quotes is all the
+# parsing they need. tests/verify-relay-invariants.sh runs this function
+# against fixtures with VERSION readonly, and fails if the file is sourced.
+os_release_field() {  # usage: os_release_field KEY [FILE]
+    local want="$1" file="${2:-}" key val
+    if [[ -z "$file" ]]; then
+        file=/etc/os-release
+        [[ -r "$file" ]] || file=/usr/lib/os-release
+    fi
+    [[ -r "$file" ]] || return 0
+    while IFS='=' read -r key val || [[ -n "$key" ]]; do
+        [[ "$key" == "$want" ]] || continue
+        val="${val%\"}"; val="${val#\"}"
+        val="${val%\'}"; val="${val#\'}"
+        printf '%s' "$val"
+        return 0
+    done < "$file"
+    return 0
+}
+
+OS_ID=$(os_release_field ID)
+OS_LIKE=$(os_release_field ID_LIKE)
 
 PKG=""
 case " ${OS_ID} ${OS_LIKE} " in
@@ -227,13 +257,13 @@ svc_stop() {
         openrc)  rc-service nextdns stop >/dev/null 2>&1 || true ;;
     esac
 }
-svc_enable() {
+svc_enable() {  # a relay that will not come back after a reboot needs attention: exit 3
     case "$INIT" in
         systemd) systemctl enable nextdns >/dev/null 2>&1 \
-                     || warn "systemctl enable nextdns failed; the relay will not start at boot" ;;
+                     || { warn "systemctl enable nextdns failed; the relay will not start at boot"; EXIT_CODE=3; } ;;
         openrc)  rc-update add nextdns default >/dev/null 2>&1 || true
                  rc-update show default 2>/dev/null | awk '{print $1}' | grep -qx nextdns \
-                     || warn "nextdns is not in the default runlevel; run: rc-update add nextdns default" ;;
+                     || { warn "nextdns is not in the default runlevel; run: rc-update add nextdns default"; EXIT_CODE=3; } ;;
     esac
 }
 svc_restart() {
@@ -242,10 +272,28 @@ svc_restart() {
         openrc)  rc-service nextdns restart ;;
     esac
 }
+# On OpenRC, nextdns runs under supervise-daemon (see the gate section), and
+# a supervised service reads as "started" for as long as the supervisor is
+# alive, even while the child exits on every bind and is respawned. So the
+# OpenRC check also requires a socket bound to the IPv4 listen address, for
+# up to 10 s. systemd reports a crash-looping unit as activating, not active,
+# so its check stays as it was.
+udp_bound() {  # usage: udp_bound IPV4 PORT   (reads /proc/net/udp, no tools needed)
+    local a b c d hex
+    IFS=. read -r a b c d <<<"$1"
+    printf -v hex '%02X%02X%02X%02X:%04X' "$d" "$c" "$b" "$a" "$2"
+    grep -q " ${hex} " /proc/net/udp 2>/dev/null
+}
 svc_active() {
     case "$INIT" in
         systemd) systemctl is-active --quiet nextdns ;;
-        openrc)  rc-service -q nextdns status >/dev/null 2>&1 ;;
+        openrc)  local deadline=$(( SECONDS + 10 ))
+                 while (( SECONDS < deadline )); do
+                     rc-service -q nextdns status >/dev/null 2>&1 \
+                         && udp_bound "$TS_IPV4" 53 && return 0
+                     sleep 1
+                 done
+                 return 1 ;;
     esac
 }
 svc_logs() {
@@ -284,7 +332,9 @@ if [[ "$INIT" == "openrc" ]]; then
     if [[ -z "$TS_SVC" ]]; then
         warn "No OpenRC service for tailscaled found in /etc/init.d (tailscale or tailscaled). The boot gate will wait for the addresses but cannot start tailscaled first."
     elif ! rc-update show 2>/dev/null | awk '{print $1}' | grep -qx "$TS_SVC"; then
-        warn "$TS_SVC is not in any OpenRC runlevel, so Tailscale will not come up after a reboot. Fix: rc-update add $TS_SVC default"
+        # Not a problem: the gate declares `need $TS_SVC`, so OpenRC starts it
+        # at boot as a dependency of nextdns -> tailwag-gate.
+        log "$TS_SVC is in no OpenRC runlevel; it will start at boot as a dependency of the boot gate."
     fi
 fi
 
@@ -377,9 +427,15 @@ else
             curl -fsSL https://repo.nextdns.io/nextdns.pub -o /etc/apk/keys/nextdns.pub
             chmod 644 /etc/apk/keys/nextdns.pub
 
+            # Appending to a file whose last line has no newline would glue
+            # the URL onto that line and break both repositories.
             APK_REPO="https://repo.nextdns.io/apk"
-            grep -qxF "$APK_REPO" /etc/apk/repositories 2>/dev/null \
-                || printf '%s\n' "$APK_REPO" >> /etc/apk/repositories
+            if ! grep -qxF "$APK_REPO" /etc/apk/repositories 2>/dev/null; then
+                if [[ -s /etc/apk/repositories && -n "$(tail -c1 /etc/apk/repositories)" ]]; then
+                    printf '\n' >> /etc/apk/repositories
+                fi
+                printf '%s\n' "$APK_REPO" >> /etc/apk/repositories
+            fi
 
             apk update --no-progress
             apk add --no-progress nextdns
@@ -387,8 +443,19 @@ else
         dnf)
             log "Installing NextDNS CLI from repo.nextdns.io (rpm) ..."
 
-            DNF="dnf"
-            command -v dnf &>/dev/null || DNF="yum"
+            # Image-based Fedora/RHEL (CoreOS, IoT, Atomic desktops, bootc)
+            # cannot dnf-install into its read-only /usr: packages are
+            # layered with rpm-ostree and need a reboot.
+            if [[ -e /run/ostree-booted ]]; then
+                die "This is an rpm-ostree host. Install NextDNS yourself: put https://repo.nextdns.io/nextdns.repo in /etc/yum.repos.d/, run 'rpm-ostree install nextdns', reboot, run 'nextdns install', then re-run Tailwag (it skips this step when nextdns is present)."
+            fi
+            if command -v dnf &>/dev/null; then
+                DNF="dnf"
+            elif command -v yum &>/dev/null; then
+                DNF="yum"
+            else
+                die "Neither dnf nor yum found. Install the nextdns CLI yourself (https://github.com/nextdns/nextdns/wiki), run 'nextdns install', then re-run Tailwag."
+            fi
 
             # curl-minimal already provides `curl` on RHEL 9+ and installing
             # the full package over it needs --allowerasing, so only add curl
@@ -461,7 +528,12 @@ STATIC
 #      its own deadline and error message, plus restart-on-failure so
 #      transient timing issues self-heal
 #      OpenRC: a `tailwag-gate` service whose start() is the helper, declared
-#      as rc_need in /etc/conf.d/nextdns, so nextdns cannot start before it
+#      as rc_need in /etc/conf.d/nextdns, so nextdns cannot start before it.
+#      The same conf.d puts nextdns under supervise-daemon (restart 5s after
+#      any exit, no limit), so the gate waits only 30s and then lets nextdns
+#      start: a late address heals itself through respawns, as systemd's
+#      Restart=on-failure does. Without supervise-daemon the gate waits 120s
+#      and fails, as on systemd, but nothing retries it.
 #
 # The helper body below is also committed as scripts/wait-listen-addrs, which
 # ShellCheck lints and tests/verify-relay-invariants.sh compares byte for
@@ -476,11 +548,12 @@ cat > "${HELPER}.tmp" <<'WAIT'
 #!/usr/bin/env bash
 # shellcheck shell=bash
 # ==============================================================================
-#  wait-listen-addrs  ·  Tailwag host boot gate (systemd ExecStartPre)
+#  wait-listen-addrs  ·  Tailwag host boot gate (systemd and OpenRC)
 # ==============================================================================
 #
 #  Installed by tailwag.sh to /usr/local/libexec/tailwag/wait-listen-addrs and
-#  run as ExecStartPre= of nextdns.service. Blocks until every specific
+#  run as ExecStartPre= of nextdns.service (systemd) or as start() of the
+#  tailwag-gate service that nextdns needs (OpenRC). Blocks until every specific
 #  `listen` address in /etc/nextdns.conf is assigned to the Tailscale
 #  interface, so nextdns never tries to bind() an address that is not there
 #  yet (the boot race the whole project exists to fix).
@@ -499,8 +572,9 @@ cat > "${HELPER}.tmp" <<'WAIT'
 #
 #  Usage:   wait-listen-addrs [interface]      (default: tailscale0)
 #  Env:     TAILWAG_WAIT_SECS   deadline in seconds (default 120). If you
-#                               raise it, raise TimeoutStartSec in the
-#                               drop-in too, or systemd kills us first.
+#                               raise it on systemd, raise TimeoutStartSec
+#                               in the drop-in too, or systemd kills us
+#                               first. The OpenRC gate sets its own.
 #           TAILWAG_CONF        config to read (default /etc/nextdns.conf)
 #  Exit:    0 all addresses present (or none to wait for), 1 timed out.
 #
@@ -623,8 +697,39 @@ openrc)
     # no daemon is marked started once start() returns 0, so the wait runs
     # once per boot (or per tailscaled restart), never on a plain
     # `rc-service nextdns restart`.
-    GATE_DEPEND="    after net"
+    #
+    # Self-heal. A gate that fails leaves nextdns stopped for good: OpenRC
+    # never retries a failed dependency, so one slow boot (the router comes
+    # up after the relay, a DHCP lease takes minutes) meant no DNS until
+    # someone logged in. With supervise-daemon (part of OpenRC) the gate waits
+    # 30s, then warns and returns 0; nextdns starts, exits 1 while its address
+    # is missing (`nextdns run` returns the bind error, run.go upstream), and
+    # supervise-daemon respawns it every 5s, backing off, until the bind
+    # works. The short wait also bounds how long services that `use dns`
+    # (sshd, chronyd; nextdns `provide`s dns) sit behind the gate at boot,
+    # and stays under the 60s OpenRC waits for a dependency another process
+    # is starting. `keyword -timeout` lifts that 60s limit for the 120s
+    # unsupervised gate.
+    OPENRC_SUPERVISED=false
+    command -v supervise-daemon &>/dev/null && OPENRC_SUPERVISED=true
+
+    GATE_DEPEND="    after net"$'\n'"    keyword -timeout"
     [[ -n "$TS_SVC" ]] && GATE_DEPEND="    need ${TS_SVC}"$'\n'"${GATE_DEPEND}"
+
+    if [[ "$OPENRC_SUPERVISED" == true ]]; then
+        GATE_START="    ebegin \"Waiting up to 30s for the Tailscale listen addresses on ${TS_IFACE}\"
+    if TAILWAG_WAIT_SECS=30 ${HELPER} ${TS_IFACE}; then
+        eend 0
+    else
+        ewend 1 \"Not there yet; starting nextdns anyway, supervise-daemon retries it until they are\"
+    fi
+    return 0"
+    else
+        GATE_START="    ebegin \"Waiting up to 120s for the Tailscale listen addresses on ${TS_IFACE}\"
+    ${HELPER} ${TS_IFACE}
+    eend \$?"
+        warn "supervise-daemon not found: nextdns will not be restarted if the boot gate times out. Install a newer OpenRC to get the self-healing gate."
+    fi
 
     cat > "${GATE_FILE}.tmp" <<EOF
 #!/sbin/openrc-run
@@ -640,9 +745,7 @@ ${GATE_DEPEND}
 }
 
 start() {
-    ebegin "Waiting for the Tailscale listen addresses on ${TS_IFACE}"
-    ${HELPER} ${TS_IFACE}
-    eend \$?
+${GATE_START}
 }
 
 stop() {
@@ -653,13 +756,28 @@ EOF
     mv -f "${GATE_FILE}.tmp" "$GATE_FILE"
 
     log "Installing OpenRC dependency: $CONFD_FILE"
-    cat > "$CONFD_FILE" <<EOF
+    {
+        cat <<EOF
 # Installed by Tailwag ${VERSION}
 # Start nextdns only after the Tailwag boot gate has seen every listen
 # address from /etc/nextdns.conf on ${TS_IFACE}. This file survives nextdns
 # package upgrades; /etc/init.d/nextdns does not (see $GATE_FILE).
 rc_need="tailwag-gate"
 EOF
+        # The init script's start_stop_daemon_args (--env SERVICE_RUN_MODE=1)
+        # reach supervise-daemon too: supervise-daemon.sh falls back to them
+        # when supervise_daemon_args is unset.
+        if [[ "$OPENRC_SUPERVISED" == true ]]; then
+            cat <<'EOF'
+# Supervise nextdns and restart it 5s after any exit, without limit, like
+# Restart=on-failure on systemd: a bind that fails because the Tailscale
+# address is late, or a crash later on, heals itself.
+supervisor=supervise-daemon
+respawn_delay=5
+respawn_max=0
+EOF
+        fi
+    } > "$CONFD_FILE"
 
     # Refresh the dependency cache so the new need is honoured on the restart
     # below, not only after the next boot.
@@ -669,9 +787,16 @@ esac
 
 # -- Firewall -----------------------------------------------------------------
 #
-# nextdns binds only the Tailscale addresses, so the rules open port 53 on
-# the Tailscale interface alone (UFW) or in the zone that interface belongs
-# to (firewalld). Nothing else listens on 53.
+# nextdns binds only the Tailscale addresses. UFW opens port 53 on the
+# Tailscale interface alone. firewalld has no per-interface rule inside a
+# zone, and the zone that governs tailscale0 is usually the default zone,
+# which also holds the uplink, so a bare --add-port=53 there would open DNS
+# to the LAN or the internet for anything else listening on 53. Instead it
+# gets rich rules that accept port 53 only from the tailnet's address ranges
+# (100.64.0.0/10, fd7a:115c:a1e0::/48). That is a source scope, not an
+# interface scope: with tailscaled's netfilter on (the default), its
+# ts-input chain drops 100.64.0.0/10 sources arriving on any other
+# interface; nothing equivalent drops spoofed fd7a: sources elsewhere.
 
 # LC_ALL=C: ufw ships translations, so on a localised server the status line
 # is not "Status: active" and the rules were silently skipped. Capture first
@@ -696,22 +821,56 @@ if [[ "$UFW_STATUS" == *"Status: active"* ]]; then
 elif command -v firewall-cmd &>/dev/null && firewall-cmd --state &>/dev/null; then
     # Fedora / RHEL family. An interface with no explicit zone is governed by
     # the default zone (usually `public`, which drops inbound 53), so the
-    # relay is unreachable from the tailnet until that zone opens the port.
+    # relay is unreachable from the tailnet until that zone accepts it.
     # `--get-zone-of-interface` prints "no zone" and exits non-zero for an
     # unassigned interface.
-    FW_ZONE=$(firewall-cmd --get-zone-of-interface "$TS_IFACE" 2>/dev/null || true)
-    [[ -n "$FW_ZONE" && "$FW_ZONE" != "no zone" ]] \
-        || FW_ZONE=$(firewall-cmd --get-default-zone 2>/dev/null || true)
-    if [[ -n "$FW_ZONE" ]]; then
-        log "Configuring firewalld: port 53 in zone $FW_ZONE ($TS_IFACE)..."
-        # --permanent then --reload: idempotent, and the running config
-        # matches what survives a reboot.
-        firewall-cmd --permanent --zone="$FW_ZONE" --add-port=53/udp >/dev/null
-        firewall-cmd --permanent --zone="$FW_ZONE" --add-port=53/tcp >/dev/null
-        firewall-cmd --reload >/dev/null
+    #
+    # Runtime and permanent are written separately, each to the zone that
+    # governs the interface in that configuration, and there is no --reload:
+    # a reload rebuilds the runtime from permanent and throws away every
+    # runtime-only rule, which is how fail2ban (EPEL's default banaction)
+    # holds its bans. Re-adding an existing rule is ALREADY_ENABLED, a
+    # warning with exit 0, so re-runs are idempotent. A failure warns and
+    # exits 3 rather than ending the run here, with nextdns stopped.
+    fw_zone() {  # usage: fw_zone [--permanent]
+        local z
+        z=$(firewall-cmd "$@" --get-zone-of-interface="$TS_IFACE" 2>/dev/null || true)
+        [[ -n "$z" && "$z" != "no zone" ]] \
+            || z=$(firewall-cmd --get-default-zone 2>/dev/null || true)
+        printf '%s' "$z"
+    }
+    FW_RULES=(
+        'rule family="ipv4" source address="100.64.0.0/10" port port="53" protocol="udp" accept'
+        'rule family="ipv4" source address="100.64.0.0/10" port port="53" protocol="tcp" accept'
+        'rule family="ipv6" source address="fd7a:115c:a1e0::/48" port port="53" protocol="udp" accept'
+        'rule family="ipv6" source address="fd7a:115c:a1e0::/48" port port="53" protocol="tcp" accept'
+    )
+    FW_RT_ZONE=$(fw_zone)
+    FW_PERM_ZONE=$(fw_zone --permanent)
+    if [[ -n "$FW_RT_ZONE" && -n "$FW_PERM_ZONE" ]]; then
+        log "Configuring firewalld: port 53 from tailnet addresses in zone $FW_RT_ZONE (permanent: $FW_PERM_ZONE)..."
+        FW_ERR=""
+        for rule in "${FW_RULES[@]}"; do
+            out=$(firewall-cmd --zone="$FW_RT_ZONE" --add-rich-rule="$rule" 2>&1) \
+                || FW_ERR="${FW_ERR:-$out}"
+            out=$(firewall-cmd --permanent --zone="$FW_PERM_ZONE" --add-rich-rule="$rule" 2>&1) \
+                || FW_ERR="${FW_ERR:-$out}"
+        done
+        if [[ -n "$FW_ERR" ]]; then
+            warn "firewalld rejected a rule ($FW_ERR). Port 53 may be closed to the tailnet; add it yourself: firewall-cmd [--permanent] --zone=<zone> --add-rich-rule='${FW_RULES[0]}'"
+            EXIT_CODE=3
+        fi
     else
-        warn "firewalld is running but no zone could be determined for $TS_IFACE. Open port 53 there yourself."
+        warn "firewalld is running but no zone could be determined for $TS_IFACE. Accept port 53 from 100.64.0.0/10 and fd7a:115c:a1e0::/48 there yourself."
+        EXIT_CODE=3
     fi
+elif command -v firewall-cmd &>/dev/null && [[ "$INIT" == systemd ]] \
+    && systemctl is-enabled --quiet firewalld 2>/dev/null; then
+    # Enabled but not running right now: it starts at the next boot with no
+    # rule for the relay and drops port 53 from the tailnet. firewall-cmd
+    # needs the daemon, so say so instead of reporting success.
+    warn "firewalld is enabled but not running, so no rule was added; it will block port 53 from the tailnet once it starts. Start it (systemctl start firewalld) and re-run Tailwag."
+    EXIT_CODE=3
 else
     log "No active firewall found (ufw, firewalld). Ensure port 53 on $TS_IFACE is reachable from your tailnet."
 fi
@@ -726,7 +885,7 @@ sleep 2
 if ! svc_active; then
     warn "Service did not start cleanly. Recent logs:"
     svc_logs
-    die "nextdns service is not running."
+    die "nextdns is not running, or not listening on ${TS_IPV4}:53 (another DNS server on port 53?)."
 fi
 
 # Quick smoke test: can we actually resolve through the relay?

@@ -11,6 +11,10 @@
 #    - Both nextdns.conf generators (host + container) share the invariants
 #    - The host loop guard is applied, never asked for
 #    - tailwag.sh keeps VERSION="dev" for checks.yml to stamp at release
+#    - tailwag.sh parses os-release (run against fixtures with VERSION
+#      readonly) instead of sourcing it
+#    - The OpenRC gate and conf.d are real code, not comments; firewalld is
+#      opened by tailnet source, never as a bare port, and never reloaded
 #
 #  Run by .github/workflows/checks.yml on every push and pull request.
 # =============================================================================
@@ -187,14 +191,82 @@ need scripts/wait-listen-addrs "TAILWAG_WAIT_SECS"
 # an official install rather than a hand-copied binary.
 
 need tailwag.sh '/etc/init.d/tailwag-gate'
-need tailwag.sh 'rc_need="tailwag-gate"'
 need tailwag.sh 'https://repo.nextdns.io/apk'
 need tailwag.sh '/etc/apk/keys/nextdns.pub'
 need tailwag.sh 'https://repo.nextdns.io/nextdns.repo'
-need tailwag.sh 'firewall-cmd'
 if grep -qE '^[[:space:]]*start_pre\(\)' tailwag.sh; then
     die "tailwag.sh defines start_pre() for nextdns; the OpenRC gate must be its own service (nextdns install rewrites /etc/init.d/nextdns)"
 fi
+
+# Whole-line matches, so a comment that merely mentions them cannot satisfy
+# the check: the conf.d content, the heredocs that write the gate and the
+# conf.d, the gate's start() running the generated body, and both gate
+# variants (supervised 30s, unsupervised 120s) calling the helper.
+# shellcheck disable=SC2016  # literal source text to look for, not expansions
+for line in 'rc_need="tailwag-gate"' 'supervisor=supervise-daemon' 'respawn_max=0' \
+            '    cat > "${GATE_FILE}.tmp" <<EOF' '    } > "$CONFD_FILE"'; do
+    grep -qxF -- "$line" tailwag.sh || die "tailwag.sh is missing the line: $line"
+    log "ok  tailwag.sh line: $line"
+done
+awk '/^    cat > "\$\{GATE_FILE\}\.tmp" <<EOF$/ { f = 1; next }
+     f && /^EOF$/ { exit }
+     f && prev == "start() {" && $0 == "${GATE_START}" { ok = 1 }
+     f { prev = $0 }
+     END { exit !ok }' tailwag.sh \
+    || die "the tailwag-gate heredoc's start() does not run \${GATE_START}"
+[[ "$(grep -cE '^[[:space:]]*(if TAILWAG_WAIT_SECS=30 )?\$\{HELPER\} \$\{TS_IFACE\}(; then)?$' tailwag.sh)" -eq 2 ]] \
+    || die "both OpenRC gate variants must call \${HELPER} \${TS_IFACE}"
+log "ok  tailwag-gate start() runs the helper (supervised and unsupervised)"
+
+# firewalld: a bare port in the zone that governs tailscale0 (usually the
+# default zone, which also holds the uplink) opens 53 beyond the tailnet,
+# and --reload drops runtime-only rules such as fail2ban's bans.
+if grep -nE '^[^#]*firewall-cmd[^#]*(--add-port=53|--reload)' tailwag.sh; then
+    die "tailwag.sh opens a bare port 53 or reloads firewalld; use the tailnet-source rich rules, runtime and permanent, without --reload"
+fi
+# shellcheck disable=SC2016  # literal source text
+need tailwag.sh '--add-rich-rule="$rule"'
+need tailwag.sh "'rule family=\"ipv4\" source address=\"100.64.0.0/10\" port port=\"53\" protocol=\"udp\" accept'"
+need tailwag.sh "'rule family=\"ipv6\" source address=\"fd7a:115c:a1e0::/48\" port port=\"53\" protocol=\"udp\" accept'"
+
+# --- Host: os-release is parsed, never sourced --------------------------------
+# tailwag.sh has `readonly VERSION`, and Debian, Ubuntu and Fedora set
+# VERSION= in os-release before ID=, so sourcing the file, even inside
+# $( ), killed the script under set -e with no output. Every grep above
+# passed while every Debian/Ubuntu run exited 1, so this runs the real
+# reader, extracted from tailwag.sh, with VERSION readonly as it is there.
+
+if grep -nE '^[^#]*(^|[;&|({[:space:]])(\.|source)[[:space:]]+["'"'"']?(/etc|/usr/lib)/os-release' tailwag.sh; then
+    die "tailwag.sh sources os-release; parse it with os_release_field instead"
+fi
+OSR_FN=$(sed -n '/^os_release_field() {/,/^}/p' tailwag.sh)
+[[ -n "$OSR_FN" ]] || die "tailwag.sh has no os_release_field() reader"
+OSR_DIR=$(mktemp -d)
+trap 'rm -f "${HEREDOC}"; rm -rf "$OSR_DIR"' EXIT
+printf '%s\n' 'PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"' 'NAME="Debian GNU/Linux"' \
+    'VERSION_ID="12"' 'VERSION="12 (bookworm)"' 'VERSION_CODENAME=bookworm' 'ID=debian' \
+    > "$OSR_DIR/debian"
+printf '%s\n' 'PRETTY_NAME="Ubuntu 24.04.1 LTS"' 'NAME="Ubuntu"' 'VERSION_ID="24.04"' \
+    'VERSION="24.04.1 LTS (Noble Numbat)"' 'ID=ubuntu' 'ID_LIKE=debian' > "$OSR_DIR/ubuntu"
+printf '%s\n' 'NAME="Rocky Linux"' 'VERSION="9.5 (Blue Onyx)"' 'ID="rocky"' \
+    'ID_LIKE="rhel centos fedora"' > "$OSR_DIR/rocky"
+printf '%s' 'NAME="Alpine Linux"'$'\n''ID=alpine' > "$OSR_DIR/alpine"   # no final newline
+
+check_osr() {  # usage: check_osr FIXTURE KEY EXPECTED
+    local got
+    got=$(bash -c 'set -euo pipefail; readonly VERSION="dev"; eval "$1"; os_release_field "$2" "$3"' \
+            _ "$OSR_FN" "$2" "$OSR_DIR/$1") \
+        || die "os_release_field $2 failed on the $1 fixture with VERSION readonly"
+    [[ "$got" == "$3" ]] || die "os_release_field $2 on $1: got '$got', want '$3'"
+    log "ok  os_release_field $2 on $1 = '$3'"
+}
+check_osr debian ID debian
+check_osr debian ID_LIKE ""
+check_osr ubuntu ID ubuntu
+check_osr ubuntu ID_LIKE debian
+check_osr rocky ID rocky
+check_osr rocky ID_LIKE "rhel centos fedora"
+check_osr alpine ID alpine
 
 # --- Every workflow pins a top-level token scope ------------------------------
 # Without one, GITHUB_TOKEN gets the repository default, which is read-write on

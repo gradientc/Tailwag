@@ -39,7 +39,7 @@ There are two supported delivery mechanisms that share the same principles:
 .
 ├── tailwag.sh                 # Host installer. Idempotent, strict mode, self-contained for curl|bash; apt/apk/dnf, systemd/OpenRC
 ├── scripts/
-│   └── wait-listen-addrs      # Host boot gate (ExecStartPre). DUPLICATE of the heredoc inside tailwag.sh
+│   └── wait-listen-addrs      # Host boot gate helper (systemd ExecStartPre, OpenRC tailwag-gate). DUPLICATE of the heredoc inside tailwag.sh
 ├── tests/
 │   └── verify-relay-invariants.sh # Static gates: pins, checksums, shared conf lines, duplicate identity, loop guard
 ├── LICENSE, SECURITY.md, README.md
@@ -110,7 +110,7 @@ If you add a new `.sh` file, add it to the command above. Extensionless scripts 
 bash tests/verify-relay-invariants.sh
 ```
 
-CI runs it on every push and PR (`.github/workflows/checks.yml`). It fails if a duplicated script drifts from its source of truth, if either `nextdns.conf` generator loses a shared invariant line (`forwarder ts.net=…`, `discovery-dns`, `bogus-priv true`, `auto-activate false`, `mdns disabled`), if the host loop guard turns back into a prompt, or if the Dockerfile pins and the table below disagree.
+CI runs it on every push and PR (`.github/workflows/checks.yml`). It fails if a duplicated script drifts from its source of truth, if either `nextdns.conf` generator loses a shared invariant line (`forwarder ts.net=…`, `discovery-dns`, `bogus-priv true`, `auto-activate false`, `mdns disabled`), if the host loop guard turns back into a prompt, if `tailwag.sh` sources os-release or its `os_release_field` reader fails on fixtures with `VERSION` readonly (the check runs the function, because only running it catches that), if the OpenRC gate or `/etc/conf.d/nextdns` lines exist only in comments, if firewalld gets a bare port 53 or a `--reload`, or if the Dockerfile pins and the table below disagree.
 
 ### Testing the host script
 
@@ -204,7 +204,7 @@ Fly.io deployments are fully supported (see `fly.toml` and the docker README).
 
 1. **Tailscale IP readiness**
    - The container version waits in `tailscale-up.sh` after `tailscale up` returns.
-   - The host version runs `/usr/local/libexec/tailwag/wait-listen-addrs` before nextdns starts: as `ExecStartPre=` in the systemd drop-in, or as the `start()` of the OpenRC `tailwag-gate` service that `/etc/conf.d/nextdns` declares in `rc_need`. It waits until **every** `listen` address in `/etc/nextdns.conf` is on the Tailscale interface (exact match, IPv4 and IPv6, 120 s deadline, `TimeoutStartSec=150` above it on systemd). The config is the single source of truth; never bake an address into a service file again. Neither gate edits NextDNS's own service file: every package upgrade re-runs `nextdns install`, which rewrites it (`service.go` upstream), while the drop-in directory and `/etc/conf.d/nextdns` survive.
+   - The host version runs `/usr/local/libexec/tailwag/wait-listen-addrs` before nextdns starts: as `ExecStartPre=` in the systemd drop-in, or as the `start()` of the OpenRC `tailwag-gate` service that `/etc/conf.d/nextdns` declares in `rc_need`. It waits until **every** `listen` address in `/etc/nextdns.conf` is on the Tailscale interface (exact match, IPv4 and IPv6). systemd: 120 s deadline, `TimeoutStartSec=150` above it, `Restart=on-failure` retries. OpenRC: `/etc/conf.d/nextdns` also sets `supervisor=supervise-daemon`, `respawn_delay=5`, `respawn_max=0`, so the gate waits only 30 s and then returns 0; `nextdns run` exits 1 on a failed bind and is respawned until the address is there. Without `supervise-daemon` the gate falls back to 120 s and fails, unretried. On OpenRC `svc_active` also checks `/proc/net/udp` for the bound listener, because a supervised service reads as started while its child crash-loops. The config is the single source of truth; never bake an address into a service file again. Neither gate edits NextDNS's own service file: every package upgrade re-runs `nextdns install`, which rewrites it (`service.go` upstream), while the drop-in directory and `/etc/conf.d/nextdns` survive.
    - Both poll for an address matching `^100\.` (IPv4) or the `fd7a:115c:...` prefix (IPv6).
 
 2. **iptables backend compatibility**

@@ -24,7 +24,13 @@ curl -fsSL https://repo.nextdns.io/nextdns.pub -o /etc/apk/keys/nextdns.pub   # 
 curl -fsSL https://repo.nextdns.io/nextdns.repo -o /etc/yum.repos.d/nextdns.repo   # dnf (the repo file names its gpgkey URL)
 ```
 
-This means a compromised `repo.nextdns.io` or a network-level MITM at that moment could substitute a malicious key. This is a standard limitation of the repository bootstrap pattern (shared by many popular tools); it applies once, and every later package update is then verified against the installed key. For high-security environments, download the key out-of-band, verify its fingerprint against a trusted source, install it and the `nextdns` package manually, and run `nextdns install`; the script skips its whole install step, key fetch included, when `nextdns` is already present.
+This means a compromised `repo.nextdns.io` or a network-level MITM at that moment could substitute a malicious key (on dnf, the whole `.repo` file, its verification settings included). This is a standard limitation of the repository bootstrap pattern (shared by many popular tools), and it applies once. What protects later updates differs by package manager:
+
+- **apt:** the key is bound to the NextDNS source alone (`signed-by=`), and every later update from it is verified against that key.
+- **apk:** a key in `/etc/apk/keys` is trusted for every repository in `/etc/apk/repositories`, not only NextDNS's.
+- **dnf:** NextDNS's `.repo` sets `repo_gpgcheck=1` and `gpgcheck=0`: dnf verifies the signed repository metadata (which carries each package's checksum) with the key from the file's `gpgkey=` URL, but the packages themselves are unsigned.
+
+As with any added repository, NextDNS's can supply packages under any name; NextDNS's own installer asks for the same trust. For high-security environments, download the key out-of-band, verify its fingerprint against a trusted source, install it and the `nextdns` package manually, and run `nextdns install`; the script skips its whole install step, key fetch included, when `nextdns` is already present.
 
 ### `curl | bash` install pattern
 
