@@ -218,23 +218,36 @@ awk '/^    cat > "\$\{GATE_FILE\}\.tmp" <<EOF$/ { f = 1; next }
     || die "both OpenRC gate variants must call \${HELPER} \${TS_IFACE}"
 log "ok  tailwag-gate start() runs the helper (supervised and unsupervised)"
 
-# firewalld: a bare port in the zone that governs tailscale0 (usually the
-# default zone, which also holds the uplink) opens 53 beyond the tailnet,
-# and --reload drops runtime-only rules such as fail2ban's bans.
-if grep -nE '^[^#]*firewall-cmd[^#]*(--add-port=53|--reload)' tailwag.sh; then
-    die "tailwag.sh opens a bare port 53 or reloads firewalld; use the tailnet-source rich rules, runtime and permanent, without --reload"
+# firewalld: a bare port or service in the zone that governs tailscale0
+# (usually the default zone, which also holds the uplink) opens 53 beyond the
+# tailnet, and a reload drops runtime-only rules such as fail2ban's bans.
+# The tokens are banned anywhere in uncommented code, not only on lines that
+# say firewall-cmd, so an array, a variable or a line continuation cannot
+# bring them back. `systemctl daemon-reload` does not match (one dash).
+if grep -nE '^[^#]*(add-port|add-service|(^|[[:space:]"'"'"'=])--(complete-)?reload([^[:alnum:]_-]|$)|(reload|restart)[[:space:]]+firewalld)' tailwag.sh; then
+    die "tailwag.sh opens a bare port/service or reloads firewalld; use the tailnet-source rich rules, runtime and permanent, without a reload"
 fi
-# shellcheck disable=SC2016  # literal source text
-need tailwag.sh '--add-rich-rule="$rule"'
-need tailwag.sh "'rule family=\"ipv4\" source address=\"100.64.0.0/10\" port port=\"53\" protocol=\"udp\" accept'"
-need tailwag.sh "'rule family=\"ipv6\" source address=\"fd7a:115c:a1e0::/48\" port port=\"53\" protocol=\"udp\" accept'"
+# Both writes, each to its own zone, and all four rules exactly.
+# shellcheck disable=SC2016,SC1003  # literal source text, trailing backslash included
+for line in '            out=$(firewall-cmd --zone="$FW_RT_ZONE" --add-rich-rule="$rule" 2>&1) \' \
+            '            out=$(firewall-cmd --permanent --zone="$FW_PERM_ZONE" --add-rich-rule="$rule" 2>&1) \' \
+            "        'rule family=\"ipv4\" source address=\"100.64.0.0/10\" port port=\"53\" protocol=\"udp\" accept'" \
+            "        'rule family=\"ipv4\" source address=\"100.64.0.0/10\" port port=\"53\" protocol=\"tcp\" accept'" \
+            "        'rule family=\"ipv6\" source address=\"fd7a:115c:a1e0::/48\" port port=\"53\" protocol=\"udp\" accept'" \
+            "        'rule family=\"ipv6\" source address=\"fd7a:115c:a1e0::/48\" port port=\"53\" protocol=\"tcp\" accept'"; do
+    grep -qxF -- "$line" tailwag.sh || die "tailwag.sh is missing the firewalld line: $line"
+    log "ok  tailwag.sh line: ${line#"${line%%[![:space:]]*}"}"
+done
 
 # --- Host: os-release is parsed, never sourced --------------------------------
 # tailwag.sh has `readonly VERSION`, and Debian, Ubuntu and Fedora set
 # VERSION= in os-release before ID=, so sourcing the file, even inside
 # $( ), killed the script under set -e with no output. Every grep above
-# passed while every Debian/Ubuntu run exited 1, so this runs the real
-# reader, extracted from tailwag.sh, with VERSION readonly as it is there.
+# passed while every Debian/Ubuntu run exited 1, so this runs real code with
+# VERSION readonly as it is there: the reader on its own, and the whole
+# detection block from tailwag.sh (reader, OS_ID/OS_LIKE call sites and the
+# PKG case) with the os-release paths pointed at each fixture, so sourcing
+# through a variable or eval at the call site fails here too.
 
 if grep -nE '^[^#]*(^|[;&|({[:space:]])(\.|source)[[:space:]]+["'"'"']?(/etc|/usr/lib)/os-release' tailwag.sh; then
     die "tailwag.sh sources os-release; parse it with os_release_field instead"
@@ -260,6 +273,21 @@ check_osr() {  # usage: check_osr FIXTURE KEY EXPECTED
     [[ "$got" == "$3" ]] || die "os_release_field $2 on $1: got '$got', want '$3'"
     log "ok  os_release_field $2 on $1 = '$3'"
 }
+check_detect() {  # usage: check_detect FIXTURE EXPECTED_PKG
+    local block got
+    block=$(awk '/^os_release_field\(\) \{/ { f = 1 } f { print } f && /^esac$/ { exit }' tailwag.sh \
+            | sed -e "s|/etc/os-release|$OSR_DIR/$1|g" -e "s|/usr/lib/os-release|$OSR_DIR/$1|g")
+    [[ "$block" == *'PKG=""'* ]] || die "could not extract the os-release detection block from tailwag.sh"
+    got=$(bash -c 'set -euo pipefail; readonly VERSION="dev"; eval "$1"; printf "%s" "$PKG"' _ "$block") \
+        || die "the tailwag.sh detection block fails on the $1 fixture with VERSION readonly"
+    [[ "$got" == "$2" ]] || die "detection block on $1: PKG='$got', want '$2'"
+    log "ok  detection block on $1 -> PKG=$2"
+}
+check_detect debian apt
+check_detect ubuntu apt
+check_detect rocky dnf
+check_detect alpine apk
+
 check_osr debian ID debian
 check_osr debian ID_LIKE ""
 check_osr ubuntu ID ubuntu

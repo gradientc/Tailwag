@@ -110,7 +110,7 @@ If you add a new `.sh` file, add it to the command above. Extensionless scripts 
 bash tests/verify-relay-invariants.sh
 ```
 
-CI runs it on every push and PR (`.github/workflows/checks.yml`). It fails if a duplicated script drifts from its source of truth, if either `nextdns.conf` generator loses a shared invariant line (`forwarder ts.net=…`, `discovery-dns`, `bogus-priv true`, `auto-activate false`, `mdns disabled`), if the host loop guard turns back into a prompt, if `tailwag.sh` sources os-release or its `os_release_field` reader fails on fixtures with `VERSION` readonly (the check runs the function, because only running it catches that), if the OpenRC gate or `/etc/conf.d/nextdns` lines exist only in comments, if firewalld gets a bare port 53 or a `--reload`, or if the Dockerfile pins and the table below disagree.
+CI runs it on every push and PR (`.github/workflows/checks.yml`). It fails if a duplicated script drifts from its source of truth, if either `nextdns.conf` generator loses a shared invariant line (`forwarder ts.net=…`, `discovery-dns`, `bogus-priv true`, `auto-activate false`, `mdns disabled`), if the host loop guard turns back into a prompt, if `tailwag.sh` sources os-release (the check runs the `os_release_field` reader and the whole detection block, call sites included, against fixtures with `VERSION` readonly, because only running it catches that), if the OpenRC gate or `/etc/conf.d/nextdns` lines exist only in comments, if firewalld loses either the runtime or the permanent rich-rule write or gets a bare port/service or a reload, or if the Dockerfile pins and the table below disagree.
 
 ### Testing the host script
 

@@ -200,8 +200,9 @@ fi
 # exit 1, on every Debian, Ubuntu and Fedora host. Alpine's file has no
 # VERSION= line, which is how it went unnoticed. ID and ID_LIKE are plain
 # lowercase words (os-release(5)), so dropping one layer of quotes is all the
-# parsing they need. tests/verify-relay-invariants.sh runs this function
-# against fixtures with VERSION readonly, and fails if the file is sourced.
+# parsing they need. tests/verify-relay-invariants.sh runs this function and
+# the detection block below (call sites included) against fixtures with
+# VERSION readonly, so sourcing the file anywhere here fails that test.
 os_release_field() {  # usage: os_release_field KEY [FILE]
     local want="$1" file="${2:-}" key val
     if [[ -z "$file" ]]; then
@@ -274,15 +275,29 @@ svc_restart() {
 }
 # On OpenRC, nextdns runs under supervise-daemon (see the gate section), and
 # a supervised service reads as "started" for as long as the supervisor is
-# alive, even while the child exits on every bind and is respawned. So the
-# OpenRC check also requires a socket bound to the IPv4 listen address, for
-# up to 10 s. systemd reports a crash-looping unit as activating, not active,
-# so its check stays as it was.
-udp_bound() {  # usage: udp_bound IPV4 PORT   (reads /proc/net/udp, no tools needed)
-    local a b c d hex
+# alive (it writes its own PID to the pidfile), even while the child exits on
+# every bind and is respawned. So the OpenRC check also requires, for up to
+# 10 s, that the UDP socket on the IPv4 listen address belongs to a process
+# named nextdns. The owner matters: a dnsmasq or unbound bound to the same
+# address would otherwise pass for nextdns, and answer the DNS probe too.
+# systemd reports a crash-looping unit as activating, not active, so its
+# check stays as it was.
+nextdns_bound() {  # usage: nextdns_bound IPV4 PORT   (reads /proc only)
+    local a b c d hex inode p comm fd
     IFS=. read -r a b c d <<<"$1"
     printf -v hex '%02X%02X%02X%02X:%04X' "$d" "$c" "$b" "$a" "$2"
-    grep -q " ${hex} " /proc/net/udp 2>/dev/null
+    # /proc/net/udp: field 2 is local_address as hex IP:port, field 10 the
+    # socket inode, which a process's fd links to as socket:[inode].
+    inode=$(awk -v h="$hex" '$2 == h { print $10; exit }' /proc/net/udp 2>/dev/null || true)
+    [[ -n "$inode" ]] || return 1
+    for p in /proc/[0-9]*; do
+        read -r comm 2>/dev/null < "$p/comm" || continue
+        [[ "$comm" == nextdns ]] || continue
+        for fd in "$p"/fd/*; do
+            [[ "$(readlink "$fd" 2>/dev/null)" == "socket:[$inode]" ]] && return 0
+        done
+    done
+    return 1
 }
 svc_active() {
     case "$INIT" in
@@ -290,7 +305,7 @@ svc_active() {
         openrc)  local deadline=$(( SECONDS + 10 ))
                  while (( SECONDS < deadline )); do
                      rc-service -q nextdns status >/dev/null 2>&1 \
-                         && udp_bound "$TS_IPV4" 53 && return 0
+                         && nextdns_bound "$TS_IPV4" 53 && return 0
                      sleep 1
                  done
                  return 1 ;;
@@ -796,7 +811,10 @@ esac
 # (100.64.0.0/10, fd7a:115c:a1e0::/48). That is a source scope, not an
 # interface scope: with tailscaled's netfilter on (the default), its
 # ts-input chain drops 100.64.0.0/10 sources arriving on any other
-# interface; nothing equivalent drops spoofed fd7a: sources elsewhere.
+# interface, except the ChromeOS VM range 100.115.92.0/23, which it lets
+# through (util/linuxfw upstream); nothing equivalent drops spoofed fd7a:
+# sources elsewhere. UFW and firewalld failures alike warn and exit 3
+# rather than ending the run here, with nextdns stopped.
 
 # LC_ALL=C: ufw ships translations, so on a localised server the status line
 # is not "Status: active" and the rules were silently skipped. Capture first
@@ -811,14 +829,23 @@ if [[ "$UFW_STATUS" == *"Status: active"* ]]; then
         log "Configuring UFW rules on $TS_IFACE..."
 
         # ufw is idempotent for identical rules; safe to re-run.
-        ufw allow in on "$TS_IFACE" to any port 53 proto udp \
-            comment "Tailwag DNS relay" >/dev/null
-        ufw allow in on "$TS_IFACE" to any port 53 proto tcp \
-            comment "Tailwag DNS relay" >/dev/null
+        for proto in udp tcp; do
+            out=$(ufw allow in on "$TS_IFACE" to any port 53 proto "$proto" \
+                    comment "Tailwag DNS relay" 2>&1) \
+                || { warn "ufw rejected the port 53/$proto rule ($out). Open it on $TS_IFACE yourself."; EXIT_CODE=3; }
+        done
     else
         warn "$TS_IFACE interface not found. Skipping UFW rules."
     fi
-elif command -v firewall-cmd &>/dev/null && firewall-cmd --state &>/dev/null; then
+elif command -v firewall-cmd &>/dev/null && { FW_STATE=0; firewall-cmd --state &>/dev/null || FW_STATE=$?; } \
+    && [[ "$FW_STATE" == 0 || "$FW_STATE" == 251 ]]; then
+    # 251 is RUNNING_BUT_FAILED: firewalld could not load its configuration
+    # and runs a fail-safe one (default zone public, port 53 dropped). It
+    # still filters and still takes rules, so add them, and say so.
+    if [[ "$FW_STATE" == 251 ]]; then
+        warn "firewalld is running in a FAILED state (fail-safe configuration). Fix it (firewall-cmd --check-config, systemctl status firewalld); the Tailwag rules below are saved for when it loads again."
+        EXIT_CODE=3
+    fi
     # Fedora / RHEL family. An interface with no explicit zone is governed by
     # the default zone (usually `public`, which drops inbound 53), so the
     # relay is unreachable from the tailnet until that zone accepts it.
